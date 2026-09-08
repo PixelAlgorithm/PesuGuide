@@ -163,6 +163,15 @@ export class CourseOrchestrator {
     }
 
     const basename = filepath.split(/[\\/]/).pop();
+
+    // Notify background script of the pending download filename so onDeterminingFilename enforces it
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'SET_PENDING_DOWNLOAD_NAME',
+        filename: basename
+      });
+    } catch {}
+
     let fileObj;
     try {
       fileObj = new File([fileBlob], basename, { type: mimeType });
@@ -172,27 +181,35 @@ export class CourseOrchestrator {
 
     const url = URL.createObjectURL(fileObj);
 
+    // 1. Primary: HTML5 Anchor Tag Download
+    // In Blink/Chromium, <a download="filename"> directly supplies the filename
+    // to the native OS Save As dialog and Downloads manager, avoiding blob UUID fallback.
+    if (typeof document !== 'undefined' && document.body) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = basename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+
+      // Clean up after download intent has been handled
+      setTimeout(() => {
+        try { document.body.removeChild(a); } catch {}
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      }, 1000);
+
+      return Promise.resolve(Date.now());
+    }
+
+    // 2. Fallback: chrome.downloads.download
     return new Promise((resolve, reject) => {
       chrome.downloads.download({
         url: url,
-        filename: basename, // Use clean basename to avoid Chrome directory-parsing UUID bug
+        filename: basename,
         conflictAction: 'uniquify',
         saveAs: false
       }, (downloadId) => {
         if (chrome.runtime.lastError) {
-          // Fallback to HTML anchor download if chrome.downloads has issue
-          if (typeof document !== 'undefined' && document.body) {
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = basename;
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => {
-              document.body.removeChild(a);
-              URL.revokeObjectURL(url);
-            }, 10000);
-            return resolve(99999);
-          }
           URL.revokeObjectURL(url);
           reject(new Error(chrome.runtime.lastError.message));
         } else {
