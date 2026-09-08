@@ -100,6 +100,25 @@ export function formatZipFilename(subjectSlug, downloadedUnits, selectedUnitNumb
   return `${subjectSlug}_units.zip`;
 }
 
+/**
+ * Concurrently processes an array of items with a maximum concurrency limit
+ */
+export async function asyncPool(concurrency, items, iteratorFn) {
+  const ret = [];
+  const executing = new Set();
+  for (const [index, item] of items.entries()) {
+    const p = Promise.resolve().then(() => iteratorFn(item, index));
+    ret.push(p);
+    executing.add(p);
+    const clean = () => executing.delete(p);
+    p.then(clean).catch(clean);
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.all(ret);
+}
+
 export class CourseOrchestrator {
   constructor() {
     this.scraper = new PesuScraper();
@@ -157,34 +176,12 @@ export class CourseOrchestrator {
    */
   async triggerChromeDownload(blob, filepath) {
     const mimeType = filepath.endsWith('.zip') ? 'application/zip' : 'application/pdf';
-    let fileBlob = blob;
-    if (!(blob instanceof Blob)) {
-      fileBlob = new Blob([blob], { type: mimeType });
-    }
-
     const basename = filepath.split(/[\\/]/).pop();
 
-    // Notify background script of the pending download filename so onDeterminingFilename enforces it
-    try {
-      await chrome.runtime.sendMessage({
-        action: 'SET_PENDING_DOWNLOAD_NAME',
-        filename: basename
-      });
-    } catch {}
-
-    let fileObj;
-    try {
-      fileObj = new File([fileBlob], basename, { type: mimeType });
-    } catch {
-      fileObj = fileBlob;
-    }
-
-    const url = URL.createObjectURL(fileObj);
-
-    // 1. Primary: HTML5 Anchor Tag Download
-    // In Blink/Chromium, <a download="filename"> directly supplies the filename
-    // to the native OS Save As dialog and Downloads manager, avoiding blob UUID fallback.
-    if (typeof document !== 'undefined' && document.body) {
+    // 1. Primary: HTML5 Anchor Tag Download if DOM is available
+    if (typeof document !== 'undefined' && document.body && typeof URL !== 'undefined' && URL.createObjectURL) {
+      const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
+      const url = URL.createObjectURL(fileBlob);
       const a = document.createElement('a');
       a.href = url;
       a.download = basename;
@@ -192,7 +189,6 @@ export class CourseOrchestrator {
       document.body.appendChild(a);
       a.click();
 
-      // Clean up after download intent has been handled
       setTimeout(() => {
         try { document.body.removeChild(a); } catch {}
         setTimeout(() => URL.revokeObjectURL(url), 30000);
@@ -201,32 +197,33 @@ export class CourseOrchestrator {
       return Promise.resolve(Date.now());
     }
 
-    // 2. Fallback: chrome.downloads.download
+    // 2. Service Worker context: convert to Data URL and download natively
+    let bytes = blob;
+    if (blob instanceof Blob) {
+      const arrayBuffer = await blob.arrayBuffer();
+      bytes = new Uint8Array(arrayBuffer);
+    } else if (!(blob instanceof Uint8Array)) {
+      bytes = new Uint8Array(blob);
+    }
+
+    let binary = '';
+    const chunk = 16384;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    const dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
+
     return new Promise((resolve, reject) => {
       chrome.downloads.download({
-        url: url,
+        url: dataUrl,
         filename: basename,
         conflictAction: 'uniquify',
         saveAs: false
       }, (downloadId) => {
         if (chrome.runtime.lastError) {
-          URL.revokeObjectURL(url);
           reject(new Error(chrome.runtime.lastError.message));
         } else {
-          const listener = (delta) => {
-            if (delta.id === downloadId) {
-              if (delta.state && delta.state.current === 'complete') {
-                chrome.downloads.onChanged.removeListener(listener);
-                setTimeout(() => URL.revokeObjectURL(url), 10000);
-                resolve(downloadId);
-              } else if (delta.error) {
-                chrome.downloads.onChanged.removeListener(listener);
-                URL.revokeObjectURL(url);
-                reject(new Error(`Download failed: ${delta.error.current}`));
-              }
-            }
-          };
-          chrome.downloads.onChanged.addListener(listener);
+          resolve(downloadId);
         }
       });
     });
@@ -246,11 +243,12 @@ export class CourseOrchestrator {
    * Fetches file buffer from PESU Academy slide download URL
    */
   async fetchFileBuffer(url, retries = CONFIG.DOWNLOADS.RETRY_ATTEMPTS) {
+    const isPesuUrl = url.includes('pesuacademy.com');
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         const response = await fetch(url, {
           method: 'GET',
-          credentials: 'include'
+          credentials: isPesuUrl ? 'include' : 'omit'
         });
 
         if (!response.ok) {
@@ -277,7 +275,11 @@ export class CourseOrchestrator {
     await this.loadHistory(subjectKey);
 
     const isZipMode = options.downloadMode === 'zip' || options.downloadMode === undefined;
-    const zip = (isZipMode && window.JSZip) ? new window.JSZip() : null;
+    const JSZipClass = (typeof JSZip !== 'undefined' && JSZip) ||
+                       (typeof window !== 'undefined' && window.JSZip) ||
+                       (typeof self !== 'undefined' && self.JSZip) ||
+                       (typeof globalThis !== 'undefined' && globalThis.JSZip);
+    const zip = options.sharedZip || ((isZipMode && JSZipClass) ? new JSZipClass() : null);
 
     this.summary = {
       subject: subject.displayName,
@@ -316,7 +318,6 @@ export class CourseOrchestrator {
       const unitNumber = unit.unitNumber;
       const unitFolderName = `unit_${unitNumber}`;
       const files = unit.files;
-      const unitPdfBuffers = [];
 
       if (files.length === 0) {
         this.summary.emptyUnits = this.summary.emptyUnits || [];
@@ -332,11 +333,14 @@ export class CourseOrchestrator {
         continue;
       }
 
-      for (let fIdx = 0; fIdx < files.length; fIdx++) {
-        if (this.isCancelled) break;
+      // Parallel download scheme with preserved chronological order
+      const concurrency = CONFIG.DOWNLOADS.CONCURRENT_DOWNLOADS || 4;
+      const unitPdfBuffers = new Array(files.length).fill(null);
+      let unitCompleted = 0;
 
-        const file = files[fIdx];
-        overallFileIndex++;
+      await asyncPool(concurrency, files, async (file, fIdx) => {
+        if (this.isCancelled) return;
+
         const slideIndexPadded = String(fIdx + 1).padStart(2, '0');
         const slideSlug = formatSlideSlug(file.title);
 
@@ -353,10 +357,10 @@ export class CourseOrchestrator {
           onProgress({
             status: 'downloading',
             unitName: `Unit ${unitNumber}`,
-            unitProgress: `${fIdx + 1} / ${files.length}`,
+            unitProgress: `${unitCompleted} / ${files.length}`,
             overallProgress: `${overallFileIndex} / ${scanResult.totalFiles}`,
             currentFile: displayTitle,
-            percent: Math.round((overallFileIndex / scanResult.totalFiles) * 100)
+            percent: Math.round((overallFileIndex / Math.max(1, scanResult.totalFiles)) * 100)
           });
         }
 
@@ -388,22 +392,26 @@ export class CourseOrchestrator {
             }
           }
 
-          // If ZIP mode: add individual slide to ZIP folder
-          if (zip && options.saveIndividualFiles !== false) {
-            zip.file(`slides/${unitFolderName}/${slidePdfFilename}`, finalPdfBytes);
-          } else if (!zip && options.saveIndividualFiles !== false && options.downloadMode !== 'merged_only') {
-            // Direct download with clean readable filename
-            const relativePath = `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${unitFolderName}/${slidePdfFilename}`;
-            const blob = new Blob([finalPdfBytes], { type: 'application/pdf' });
-            lastDownloadId = await this.triggerChromeDownload(blob, relativePath);
-          }
-
           if (finalPdfBytes) {
-            unitPdfBuffers.push({
+            unitPdfBuffers[fIdx] = {
               buffer: finalPdfBytes,
               title: displayTitle,
-              filename: slidePdfFilename
-            });
+              filename: slidePdfFilename,
+              index: fIdx
+            };
+
+            // If ZIP mode: add individual slide to ZIP folder
+            if (zip && options.saveIndividualFiles !== false) {
+              const slidePath = options.folderPrefix
+                ? `${options.folderPrefix}/slides/${unitFolderName}/${slidePdfFilename}`
+                : `slides/${unitFolderName}/${slidePdfFilename}`;
+              zip.file(slidePath, finalPdfBytes);
+            } else if (!zip && options.saveIndividualFiles !== false && options.downloadMode !== 'merged_only') {
+              // Direct download with clean readable filename
+              const relativePath = `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${unitFolderName}/${slidePdfFilename}`;
+              const blob = new Blob([finalPdfBytes], { type: 'application/pdf' });
+              lastDownloadId = await this.triggerChromeDownload(blob, relativePath);
+            }
           }
 
           this.summary.filesDownloaded++;
@@ -417,24 +425,39 @@ export class CourseOrchestrator {
             file: displayTitle,
             reason: err.message
           });
+        } finally {
+          unitCompleted++;
+          overallFileIndex++;
+          if (onProgress) {
+            onProgress({
+              status: 'downloading',
+              unitName: `Unit ${unitNumber}`,
+              unitProgress: `${unitCompleted} / ${files.length}`,
+              overallProgress: `${overallFileIndex} / ${scanResult.totalFiles}`,
+              currentFile: displayTitle,
+              percent: Math.round((overallFileIndex / Math.max(1, scanResult.totalFiles)) * 100)
+            });
+          }
         }
-      }
+      });
+
+      const validUnitPdfBuffers = unitPdfBuffers.filter(Boolean);
 
       // Merge unit PDFs into readable subjectname_unit_x.pdf format
-      if (!this.isCancelled && unitPdfBuffers.length > 0 && options.mergeUnitPdfs !== false) {
+      if (!this.isCancelled && validUnitPdfBuffers.length > 0 && options.mergeUnitPdfs !== false) {
         const mergedFilename = `${subjectSlug}_unit_${unitNumber}.pdf`;
 
         if (onProgress) {
           onProgress({
             status: 'merging',
             unitName: `Unit ${unitNumber}`,
-            message: `Merging ${unitPdfBuffers.length} slides into ${mergedFilename}...`
+            message: `Merging ${validUnitPdfBuffers.length} slides into ${mergedFilename}...`
           });
         }
 
         try {
           const mergeResult = await PdfMerger.mergePdfs(
-            unitPdfBuffers,
+            validUnitPdfBuffers,
             `${subject.displayName} - Unit ${unitNumber}`,
             (p) => {
               if (onProgress) {
@@ -447,9 +470,12 @@ export class CourseOrchestrator {
             }
           );
 
-          // If ZIP mode: place merged unit PDF right at the root of the ZIP
+          // If ZIP mode: place merged unit PDF right at the root (or under folderPrefix)
           if (zip) {
-            zip.file(mergedFilename, mergeResult.bytes);
+            const mergedPath = options.folderPrefix
+              ? `${options.folderPrefix}/${mergedFilename}`
+              : mergedFilename;
+            zip.file(mergedPath, mergeResult.bytes);
           } else {
             // Direct or merged_only mode:
             // Download as subjectname_unit_x.pdf
@@ -483,8 +509,8 @@ export class CourseOrchestrator {
       }
     }
 
-    // If ZIP mode and processing completed, trigger single clean ZIP download
-    if (zip && !this.isCancelled && this.summary.filesDownloaded > 0) {
+    // If ZIP mode and processing completed (and not deferred to a multi-course bundle), trigger single clean ZIP download
+    if (zip && !options.skipZipDownload && !this.isCancelled && this.summary.filesDownloaded > 0) {
       const downloadedUnits = units.filter(u => u.files && u.files.length > 0);
       const zipFilename = formatZipFilename(subjectSlug, downloadedUnits, selectedUnitNumbers);
 

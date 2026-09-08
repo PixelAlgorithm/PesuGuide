@@ -13,11 +13,14 @@ export class PdfMerger {
    * @returns {Promise<Uint8Array>} Merged PDF bytes
    */
   static async mergePdfs(pdfList, unitTitle = '', onProgress = null) {
-    if (!window.PDFLib) {
+    const pdfLib = (typeof window !== 'undefined' && window.PDFLib) ||
+                   (typeof self !== 'undefined' && self.PDFLib) ||
+                   (typeof globalThis !== 'undefined' && globalThis.PDFLib);
+    if (!pdfLib) {
       throw new Error('PDFLib library is not loaded');
     }
 
-    const { PDFDocument } = window.PDFLib;
+    const { PDFDocument } = pdfLib;
     const mergedDoc = await PDFDocument.create();
 
     mergedDoc.setTitle(unitTitle || 'PESU Academy Course Unit');

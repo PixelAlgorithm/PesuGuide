@@ -3,7 +3,6 @@
  * Manages user interactions, course selection, unit filtering, live progress, and download actions.
  */
 import { PesuScraper } from './src/pesu-scraper.js';
-import { CourseOrchestrator } from './src/orchestrator.js';
 import { PptxConverter } from './src/pptx-converter.js';
 
 // DOM Elements
@@ -56,7 +55,6 @@ const failedList = document.getElementById('failedList');
 
 // Instances
 const scraper = new PesuScraper();
-let orchestrator = null;
 let currentSubjects = [];
 let lastCompletedDownloadId = null;
 
@@ -110,6 +108,7 @@ async function init() {
   subjectSelect.disabled = false;
   startBtn.disabled = false;
 
+  checkActiveBackgroundDownload();
   await loadSemesters();
 }
 
@@ -260,7 +259,105 @@ clearLogBtn.addEventListener('click', (e) => {
   logContent.innerHTML = '';
 });
 
-// Start Download execution
+// Check and resume active background download if popup is reopened
+function checkActiveBackgroundDownload() {
+  chrome.storage.local.get('pesu_download_state').then(data => {
+    const state = data.pesu_download_state;
+    if (state && state.status === 'running') {
+      handleProgressUpdate({
+        status: 'downloading',
+        unitName: state.unit,
+        currentFile: state.file,
+        percent: state.percent,
+        logs: state.logs,
+        message: `Resumed background processing: ${state.subject || ''}`
+      });
+    } else if (state && state.status === 'completed' && state.completedAt && (Date.now() - state.completedAt < 60000)) {
+      if (state.summary) {
+        showSummaryModal(state.summary);
+      }
+    }
+  });
+}
+
+// Handle live progress updates from background/offscreen worker
+function handleProgressUpdate(event) {
+  if (!event) return;
+
+  progressSection.classList.remove('hidden');
+  startBtn.classList.add('hidden');
+  cancelBtn.classList.remove('hidden');
+
+  if (event.status === 'started' || event.status === 'scanning') {
+    progressHeading.textContent = 'Discovering Materials...';
+    progressSubHeading.textContent = event.message || 'Scanning units and classes...';
+  } else if (event.status === 'downloading') {
+    progressHeading.textContent = 'Downloading Slides (Parallel)';
+    progressSubHeading.textContent = `${event.unitName || ''} (${event.unitProgress || ''})`;
+    currentUnitVal.textContent = event.unitName || '—';
+    currentFileVal.textContent = event.currentFile || '—';
+    progressPercent.textContent = `${event.percent || 0}%`;
+    overallProgressBar.style.width = `${event.percent || 0}%`;
+  } else if (event.status === 'converting') {
+    currentFileVal.textContent = event.currentFile || 'Converting...';
+  } else if (event.status === 'merging') {
+    currentFileVal.textContent = event.message || 'Merging unit PDFs...';
+  } else if (event.status === 'merged_complete') {
+    currentFileVal.textContent = `Generated ${event.mergedFilename || ''}`;
+  } else if (event.status === 'course_completed') {
+    progressHeading.textContent = 'Processing Courses...';
+    if (event.subject) progressSubHeading.textContent = event.subject;
+    currentFileVal.textContent = event.currentFile || 'Course completed';
+    progressPercent.textContent = `${event.percent || 0}%`;
+    overallProgressBar.style.width = `${event.percent || 0}%`;
+  } else if (event.status === 'completed') {
+    progressSpinner.classList.add('hidden');
+    startBtn.classList.remove('hidden');
+    cancelBtn.classList.add('hidden');
+    openFolderBtn.classList.remove('hidden');
+    progressHeading.textContent = 'Completed!';
+    progressSubHeading.textContent = 'All requested materials have been organized.';
+    progressPercent.textContent = '100%';
+    overallProgressBar.style.width = '100%';
+    if (event.lastDownloadId) lastCompletedDownloadId = event.lastDownloadId;
+    if (event.summary) {
+      showSummaryModal(event.summary);
+    }
+  } else if (event.status === 'cancelled') {
+    progressSpinner.classList.add('hidden');
+    startBtn.classList.remove('hidden');
+    cancelBtn.classList.add('hidden');
+    progressHeading.textContent = 'Cancelled';
+    progressSubHeading.textContent = 'Processing was stopped safely.';
+  } else if (event.status === 'failed') {
+    progressSpinner.classList.add('hidden');
+    startBtn.classList.remove('hidden');
+    cancelBtn.classList.add('hidden');
+    progressHeading.textContent = 'Failed';
+    progressSubHeading.textContent = event.error || 'An error occurred during download.';
+  }
+
+  // Sync activity logs
+  if (event.logs && Array.isArray(event.logs) && event.logs.length > 0) {
+    logContent.innerHTML = '';
+    event.logs.forEach(l => {
+      const row = document.createElement('div');
+      row.className = 'log-entry';
+      row.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-msg-${l.type || 'info'}">${l.message}</span>`;
+      logContent.appendChild(row);
+    });
+    logContent.scrollTop = logContent.scrollHeight;
+  }
+}
+
+// Runtime listener for background events
+chrome.runtime.onMessage.addListener((request) => {
+  if (request.action === 'DOWNLOAD_PROGRESS') {
+    handleProgressUpdate(request.data);
+  }
+});
+
+// Start Download execution: delegates to persistent background worker
 startBtn.addEventListener('click', async () => {
   const isAllSubjects = processAllSubjectsCheck.checked;
   let targetSubjects = [];
@@ -289,109 +386,53 @@ startBtn.addEventListener('click', async () => {
   openFolderBtn.classList.add('hidden');
   progressSection.classList.remove('hidden');
   progressSpinner.classList.remove('hidden');
+  progressHeading.textContent = 'Starting background download...';
+  progressSubHeading.textContent = targetSubjects[0].displayName || targetSubjects[0].code;
   logContent.innerHTML = '';
 
-  orchestrator = new CourseOrchestrator();
   const options = {
     downloadMode: downloadModeSelect ? downloadModeSelect.value : 'zip',
     mergeUnitPdfs: mergeUnitPdfsCheck.checked,
     saveIndividualFiles: saveIndividualCheck.checked
   };
 
-  addLog(`Starting processing for ${targetSubjects.length} course(s)...`, 'info');
+  const semesterName = semesterSelect.options[semesterSelect.selectedIndex]?.text || 'Semester';
+  const queueTitle = isAllSubjects 
+    ? `All ${targetSubjects.length} Courses in ${semesterName}` 
+    : (targetSubjects[0].displayName || targetSubjects[0].code);
 
-  const aggregatedSummary = {
-    subject: isAllSubjects ? `${semesterSelect.options[semesterSelect.selectedIndex]?.text} (All Courses)` : targetSubjects[0].displayName,
-    unitsFound: 0,
-    filesFound: 0,
-    filesDownloaded: 0,
-    pptxConverted: 0,
-    pdfsMerged: 0,
-    failed: 0,
-    failedList: []
-  };
+  progressSubHeading.textContent = queueTitle;
+  addLog(`Delegating ${queueTitle} to persistent background worker...`, 'info');
 
-  for (let sIdx = 0; sIdx < targetSubjects.length; sIdx++) {
-    if (orchestrator.isCancelled) break;
-
-    const sub = targetSubjects[sIdx];
-    progressHeading.textContent = `Course ${sIdx + 1} of ${targetSubjects.length}: ${sub.code}`;
-    progressSubHeading.textContent = sub.title;
-    addLog(`>>> Processing ${sub.code} - ${sub.title}`, 'info');
-
-    try {
-      const summary = await orchestrator.processSubject(sub, selectedUnits, options, (event) => {
-        if (event.status === 'downloading') {
-          progressSubHeading.textContent = `Unit: ${event.unitName} (${event.unitProgress})`;
-          currentUnitVal.textContent = event.unitName;
-          currentFileVal.textContent = event.currentFile;
-          progressPercent.textContent = `${event.percent}%`;
-          overallProgressBar.style.width = `${event.percent}%`;
-          addLog(`Downloaded: ${event.currentFile}`, 'info');
-        } else if (event.status === 'converting') {
-          currentFileVal.textContent = `Converting ${event.currentFile}...`;
-          addLog(`Converting presentation: ${event.currentFile}`, 'warn');
-        } else if (event.status === 'merging') {
-          currentFileVal.textContent = event.message;
-          addLog(event.message, 'info');
-        } else if (event.status === 'merged_complete') {
-          currentFileVal.textContent = `Generated ${event.mergedFilename}`;
-          addLog(`✅ Merged PDF saved: ${event.mergedFilename}`, 'info');
-        } else if (event.status === 'unit_empty') {
-          addLog(event.message, 'warn');
-        } else if (event.status === 'completed') {
-          if (event.lastDownloadId) lastCompletedDownloadId = event.lastDownloadId;
-        }
-      });
-
-      aggregatedSummary.unitsFound += summary.unitsFound;
-      aggregatedSummary.filesFound += summary.filesFound;
-      aggregatedSummary.filesDownloaded += summary.filesDownloaded;
-      aggregatedSummary.pptxConverted += summary.pptxConverted;
-      aggregatedSummary.pdfsMerged += summary.pdfsMerged;
-      aggregatedSummary.failed += summary.failed;
-      aggregatedSummary.failedList.push(...summary.failedList);
-      if (summary.emptyUnits) {
-        aggregatedSummary.emptyUnits = aggregatedSummary.emptyUnits || [];
-        aggregatedSummary.emptyUnits.push(...summary.emptyUnits);
-      }
-
-    } catch (err) {
-      console.error(`Failed processing subject ${sub.code}:`, err);
-      addLog(`Error processing ${sub.code}: ${err.message}`, 'error');
+  chrome.runtime.sendMessage({
+    action: 'START_DOWNLOAD',
+    subjects: targetSubjects,
+    isAllSubjects,
+    semesterName,
+    selectedUnits,
+    options
+  }, (res) => {
+    if (chrome.runtime.lastError || (res && !res.success)) {
+      const err = chrome.runtime.lastError?.message || res?.error || 'Failed to start background download';
+      addLog(`Failed to start: ${err}`, 'error');
+      startBtn.classList.remove('hidden');
+      cancelBtn.classList.add('hidden');
+      progressSpinner.classList.add('hidden');
     }
-  }
-
-  // Finished or Cancelled
-  progressSpinner.classList.add('hidden');
-  startBtn.classList.remove('hidden');
-  cancelBtn.classList.add('hidden');
-  openFolderBtn.classList.remove('hidden');
-
-  if (orchestrator.isCancelled) {
-    progressHeading.textContent = 'Cancelled';
-    progressSubHeading.textContent = 'Processing was stopped safely.';
-    addLog('Process was cancelled by user.', 'warn');
-  } else {
-    progressHeading.textContent = 'Completed!';
-    progressSubHeading.textContent = 'All requested materials have been organized.';
-    progressPercent.textContent = '100%';
-    overallProgressBar.style.width = '100%';
-    addLog('All files downloaded and merged successfully!', 'info');
-  }
-
-  // Show summary modal
-  showSummaryModal(aggregatedSummary);
+  });
 });
 
-// Cancel button
+// Cancel button: signals background worker to stop
 cancelBtn.addEventListener('click', () => {
-  if (orchestrator) {
-    cancelBtn.disabled = true;
-    cancelBtn.textContent = 'Stopping...';
-    orchestrator.cancel();
-    addLog('Stopping queue safely...', 'warn');
-  }
+  cancelBtn.disabled = true;
+  cancelBtn.textContent = 'Stopping...';
+  chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOAD' }, () => {
+    addLog('Cancel signal dispatched to background worker.', 'warn');
+    setTimeout(() => {
+      cancelBtn.disabled = false;
+      cancelBtn.innerHTML = '<span class="btn-icon">⏹️</span> Cancel / Stop';
+    }, 1000);
+  });
 });
 
 // Open folder
@@ -428,8 +469,8 @@ function showSummaryModal(sum) {
   const emptyUnitsNotice = document.getElementById('emptyUnitsNotice');
   const emptyUnitsList = document.getElementById('emptyUnitsList');
   if (sum.emptyUnits && sum.emptyUnits.length > 0 && emptyUnitsNotice && emptyUnitsList) {
-    const uniqueEmpty = Array.from(new Set(sum.emptyUnits)).sort((a, b) => a - b);
-    emptyUnitsList.textContent = `Unit ${uniqueEmpty.join(', Unit ')}`;
+    const uniqueEmpty = Array.from(new Set(sum.emptyUnits)).map(u => String(u).startsWith('Unit') || String(u).includes('Unit') ? String(u) : `Unit ${u}`);
+    emptyUnitsList.textContent = uniqueEmpty.join(', ');
     emptyUnitsNotice.classList.remove('hidden');
   } else if (emptyUnitsNotice) {
     emptyUnitsNotice.classList.add('hidden');

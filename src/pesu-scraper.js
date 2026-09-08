@@ -37,22 +37,37 @@ export class PesuScraper {
       throw new Error('No PESU Academy tab found. Please open PESU Academy in Chrome.');
     }
 
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: 'MAIN',
-      func,
+    if (typeof chrome.scripting !== 'undefined' && chrome.scripting.executeScript) {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        func,
+        args
+      });
+
+      if (!results || results.length === 0) {
+        throw new Error('Script execution in PESU Academy tab failed.');
+      }
+
+      const result = results[0].result;
+      if (result && result.error) {
+        throw new Error(result.error);
+      }
+      return result;
+    }
+
+    // Context fallback (e.g. from offscreen worker)
+    const response = await chrome.runtime.sendMessage({
+      action: 'EXECUTE_PESU_SCRIPT',
+      tabId: tab.id,
+      funcStr: func.toString(),
       args
     });
 
-    if (!results || results.length === 0) {
-      throw new Error('Script execution in PESU Academy tab failed.');
+    if (response && response.error) {
+      throw new Error(response.error);
     }
-
-    const result = results[0].result;
-    if (result && result.error) {
-      throw new Error(result.error);
-    }
-    return result;
+    return response ? response.result : null;
   }
 
   /**
@@ -369,27 +384,131 @@ export class PesuScraper {
           success: (html) => {
             const parser = new DOMParser();
             const doc = parser.parseFromString(html, 'text/html');
-            const links = Array.from(doc.querySelectorAll('.content-type-area .link-preview a[onclick*="loadIframe"]'));
+
+            // Search within slide container or fallback to body
+            const container = doc.querySelector('.content-type-area') || doc.body;
+            const candidateLinks = Array.from(
+              container.querySelectorAll('a, [onclick*="loadIframe"], [onclick*="downloadcoursedoc"], [onclick*="window.open"], [data-url]')
+            );
 
             const files = [];
-            for (const a of links) {
-              const onclick = a.getAttribute('onclick') || '';
-              const match = onclick.match(/loadIframe\('([^']+)',\s*'([^']+)'\)/);
-              if (match) {
-                let title = a.innerText.trim();
-                title = title.replace(/\s+/g, ' ').replace(/[^\x20-\x7E]/g, '').trim();
-                const path = match[1].split('#')[0];
-                const docId = match[2];
+            const seenUrls = new Set();
+            let linkIndex = 0;
 
-                files.push({
-                  docId,
-                  title: title || 'Slide Document',
-                  className: cls.className,
-                  relativeUrl: path,
-                  fullUrl: `https://www.pesuacademy.com${path}`
-                });
+            for (const a of candidateLinks) {
+              // Clean Title
+              let title = (a.innerText || a.getAttribute('title') || '').trim();
+              title = title
+                .replace(/[\uE000-\uF8FF]/g, '')
+                .replace(/[›»><]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+              // Skip obvious navigation links (e.g. "Back to Units", "Previous", "Next")
+              if (
+                !title ||
+                /^(back\s+to\s+units|back|previous|next)$/i.test(title) ||
+                (a.className && /back_link|lefttogglemenulink/i.test(a.className))
+              ) {
+                continue;
               }
+
+              const onclick = a.getAttribute('onclick') || '';
+              const href = (a.getAttribute('href') || '').trim();
+              const dataUrl = (a.getAttribute('data-url') || a.getAttribute('data-href') || '').trim();
+
+              if (onclick.includes('handleclassUnit') || onclick.includes('toggleLeftSideMenu')) {
+                continue;
+              }
+
+              let path = '';
+              let docId = '';
+
+              // Case A: loadIframe('path', 'docId')
+              const iframeMatch = onclick.match(/loadIframe\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/);
+              if (iframeMatch) {
+                path = iframeMatch[1].split('#')[0];
+                docId = iframeMatch[2];
+              }
+
+              // Case B: downloadcoursedoc(id) / downloadcoursedocforstudent(id)
+              if (!path) {
+                const docMatch = onclick.match(/downloadcoursedoc(?:forstudent)?\s*\(\s*['"]?(\d+)['"]?\s*\)/);
+                if (docMatch) {
+                  docId = docMatch[1];
+                  path = `/Academy/s/studentProfilePESUAdmin/downloadcoursedoc/${docId}`;
+                }
+              }
+
+              // Case C: window.open('url', ...) or location.href = 'url'
+              if (!path) {
+                const winOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+                if (winOpenMatch) {
+                  path = winOpenMatch[1];
+                } else {
+                  const locMatch = onclick.match(/(?:location\.href|location\.assign)\s*=\s*['"]([^'"]+)['"]/);
+                  if (locMatch) {
+                    path = locMatch[1];
+                  }
+                }
+              }
+
+              // Case D: Direct href link
+              if (!path && href && !href.startsWith('javascript:') && href !== '#' && !href.startsWith('#')) {
+                path = href;
+              }
+
+              // Case E: data-url attribute
+              if (!path && dataUrl && !dataUrl.startsWith('javascript:')) {
+                path = dataUrl;
+              }
+
+              if (!path) {
+                continue;
+              }
+
+              // Normalize target URL
+              let fullUrl = path;
+              if (path.startsWith('//')) {
+                fullUrl = `https:${path}`;
+              } else if (path.startsWith('/')) {
+                fullUrl = `https://www.pesuacademy.com${path}`;
+              } else if (!/^https?:\/\//i.test(path)) {
+                fullUrl = `https://www.pesuacademy.com/Academy/s/${path}`;
+              }
+
+              // Convert Google Drive links to direct download
+              const gDriveFileMatch = fullUrl.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+              if (gDriveFileMatch) {
+                fullUrl = `https://drive.google.com/uc?export=download&id=${gDriveFileMatch[1]}&confirm=t`;
+                if (!docId) docId = `gdrive_${gDriveFileMatch[1]}`;
+              } else {
+                const gDriveIdMatch = fullUrl.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+                if (gDriveIdMatch) {
+                  fullUrl = `https://drive.google.com/uc?export=download&id=${gDriveIdMatch[1]}&confirm=t`;
+                  if (!docId) docId = `gdrive_${gDriveIdMatch[1]}`;
+                }
+              }
+
+              linkIndex++;
+              if (!docId) {
+                docId = `slide_doc_${cls.classNo}_${linkIndex}`;
+              }
+
+              if (seenUrls.has(fullUrl)) {
+                continue;
+              }
+              seenUrls.add(fullUrl);
+
+              files.push({
+                docId,
+                title: title || `Slide Document ${linkIndex}`,
+                className: cls.className,
+                relativeUrl: path,
+                fullUrl: fullUrl
+              });
             }
+
             resolve(files);
           },
           error: (xhr, status, err) => {
@@ -405,6 +524,13 @@ export class PesuScraper {
    */
   async scanSubjectSlides(subjectId, selectedUnitNumbers = null, onProgress = null) {
     const units = await this.getUnits(subjectId);
+    if (!Array.isArray(units)) {
+      if (units && units.error) {
+        throw new Error(units.error);
+      }
+      return { subjectId, units: [], totalFiles: 0 };
+    }
+
     const targetUnits = selectedUnitNumbers 
       ? units.filter(u => selectedUnitNumbers.includes(u.unitNumber))
       : units;
