@@ -273,6 +273,7 @@ function checkActiveBackgroundDownload() {
         message: `Resumed background processing: ${state.subject || ''}`
       });
     } else if (state && state.status === 'completed' && state.completedAt && (Date.now() - state.completedAt < 60000)) {
+      if (state.lastDownloadId) lastCompletedDownloadId = state.lastDownloadId;
       if (state.summary) {
         showSummaryModal(state.summary);
       }
@@ -440,6 +441,10 @@ function triggerOpenFolder() {
   chrome.runtime.sendMessage({
     action: 'OPEN_DOWNLOADS_FOLDER',
     downloadId: lastCompletedDownloadId
+  }, (res) => {
+    if (chrome.runtime.lastError) {
+      console.warn('Could not open downloads folder:', chrome.runtime.lastError.message);
+    }
   });
 }
 

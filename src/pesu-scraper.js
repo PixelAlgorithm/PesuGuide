@@ -313,37 +313,121 @@ export class PesuScraper {
             'X-Requested-With': 'XMLHttpRequest'
           },
           success: (html) => {
-            if (typeof html === 'string' && (html.includes('No information available') || html.includes('No subjects found'))) {
+            const cleanHtml = (typeof html === 'string') ? html : '';
+            if (cleanHtml.includes('No information available') || cleanHtml.includes('No subjects found')) {
               return resolve([]);
             }
+
+            // Extract global unit IDs from any handleclasscoursecontentunit call anywhere in this unit's HTML
+            const globalMatch = cleanHtml.match(/handleclasscoursecontentunit\s*\(\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]/i);
+            const globalCourseUnitId = globalMatch ? globalMatch[1] : uContentId;
+            const globalSubjectId = globalMatch ? globalMatch[2] : subId;
+            const globalCourseContentId = globalMatch ? globalMatch[3] : uContentId;
+
+            // In Chrome, DOMParser on a fragment without <table> drops <tr> tags.
+            // Always wrap in <table> to preserve all table rows!
+            const wrappedHtml = cleanHtml.includes('<table') ? cleanHtml : `<table><tbody>${cleanHtml}</tbody></table>`;
             const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-            const rows = Array.from(doc.querySelectorAll('tbody tr'));
+            const doc = parser.parseFromString(wrappedHtml, 'text/html');
+
+            let rows = [];
+            if (window.$) {
+              try {
+                rows = window.$('<div>').html(cleanHtml).find('tr').toArray();
+              } catch (e) {}
+            }
+            if (!rows || rows.length === 0) {
+              rows = Array.from(doc.querySelectorAll('tr'));
+            }
 
             const classes = [];
+            const seenClasses = new Set();
+            let rowClassCounter = 0;
+
             for (const row of rows) {
-              const className = row.cells[0]?.innerText.trim() || 'Untitled Class';
-              
-              // Find any link that invokes handleclasscoursecontentunit for type = 2 (Slides)
-              const links = Array.from(row.querySelectorAll('a[onclick*="handleclasscoursecontentunit"]'));
-              for (const a of links) {
-                const onclick = a.getAttribute('onclick') || '';
-                const m = onclick.match(/handleclasscoursecontentunit\s*\(\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*2\b/);
+              // Skip table headers
+              const ths = row.querySelectorAll ? row.querySelectorAll('th') : (window.$(row).find('th').toArray());
+              const tds = row.querySelectorAll ? row.querySelectorAll('td') : (window.$(row).find('td').toArray());
+              if (ths.length > 0 && tds.length === 0) {
+                continue;
+              }
+
+              rowClassCounter++;
+              const firstCell = tds[0];
+              const cellText = firstCell ? (firstCell.textContent || firstCell.innerText || '').trim() : '';
+              let className = cellText.replace(/\s+/g, ' ').trim();
+              if (!className || /^(s\.?no|sl\.?no|class\s*name|topic|classes)$/i.test(className)) {
+                className = `Class ${rowClassCounter}`;
+              }
+
+              // Search this row for any handleclasscoursecontentunit call (case-insensitive)
+              const clickables = Array.from(row.querySelectorAll ? row.querySelectorAll('*') : window.$(row).find('*').toArray())
+                .filter(el => el.getAttribute && el.getAttribute('onclick'));
+
+              let matched = null;
+              // 1. Prefer type 2 (Slides)
+              for (const el of clickables) {
+                const oc = el.getAttribute('onclick') || '';
+                const m = oc.match(/handleclasscoursecontentunit\s*\(\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?2\b/i);
                 if (m) {
-                  const count = parseInt(a.innerText.replace(/\D/g, ''), 10) || 0;
-                  if (count > 0) {
-                    classes.push({
-                      className,
-                      courseunitid: m[1],
-                      subjectid: m[2],
-                      coursecontentid: m[3],
-                      classNo: m[4],
-                      slideCount: count
-                    });
+                  matched = m;
+                  break;
+                }
+              }
+
+              // 2. Any handleclasscoursecontentunit handler in row
+              if (!matched) {
+                for (const el of clickables) {
+                  const oc = el.getAttribute('onclick') || '';
+                  const m = oc.match(/handleclasscoursecontentunit\s*\(\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]/i);
+                  if (m) {
+                    matched = m;
+                    break;
                   }
                 }
               }
+
+              let courseunitid, subjectid, coursecontentid, classNo;
+              if (matched) {
+                courseunitid = matched[1];
+                subjectid = matched[2];
+                coursecontentid = matched[3];
+                classNo = matched[4];
+              } else {
+                // Fallback: extract classNo from data attributes or row index
+                const rowEl = row.getAttribute ? row : (row[0] || row);
+                const attrClassNo = rowEl.getAttribute ? (rowEl.getAttribute('data-classno') || rowEl.getAttribute('data-class-no') || rowEl.getAttribute('data-id')) : null;
+                classNo = attrClassNo || String(rowClassCounter);
+                courseunitid = globalCourseUnitId;
+                subjectid = globalSubjectId;
+                coursecontentid = globalCourseContentId;
+              }
+
+              const classKey = `${courseunitid}_${coursecontentid}_${classNo}`;
+              if (!seenClasses.has(classKey)) {
+                seenClasses.add(classKey);
+                classes.push({
+                  className,
+                  courseunitid,
+                  subjectid,
+                  coursecontentid,
+                  classNo
+                });
+              }
             }
+
+            // Fallback: if no classes were found from rows, ensure at least one default class
+            // so that actionType: 60 can inspect slides for this unit content
+            if (classes.length === 0) {
+              classes.push({
+                className: 'Unit Materials',
+                courseunitid: globalCourseUnitId,
+                subjectid: globalSubjectId,
+                coursecontentid: globalCourseContentId,
+                classNo: '1'
+              });
+            }
+
             resolve(classes);
           },
           error: (xhr, status, err) => {
@@ -382,13 +466,13 @@ export class PesuScraper {
             'X-Requested-With': 'XMLHttpRequest'
           },
           success: (html) => {
+            const cleanHtml = (typeof html === 'string') ? html : '';
             const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
+            const doc = parser.parseFromString(cleanHtml, 'text/html');
 
-            // Search within slide container or fallback to body
-            const container = doc.querySelector('.content-type-area') || doc.body;
+            // Search whole document body and content area for all clickable links & preview cards
             const candidateLinks = Array.from(
-              container.querySelectorAll('a, [onclick*="loadIframe"], [onclick*="downloadcoursedoc"], [onclick*="window.open"], [data-url]')
+              doc.querySelectorAll('a, [onclick], [data-url], [data-href], [data-link], [data-path], [data-src], iframe, embed, .link-preview, [class*="link"], [class*="slide"], [class*="card"], [class*="preview"]')
             );
 
             const files = [];
@@ -396,8 +480,7 @@ export class PesuScraper {
             let linkIndex = 0;
 
             for (const a of candidateLinks) {
-              // Clean Title
-              let title = (a.innerText || a.getAttribute('title') || '').trim();
+              let title = (a.textContent || a.innerText || a.getAttribute('title') || a.getAttribute('data-title') || '').trim();
               title = title
                 .replace(/[\uE000-\uF8FF]/g, '')
                 .replace(/[›»><]/g, '')
@@ -406,7 +489,6 @@ export class PesuScraper {
 
               // Skip obvious navigation links (e.g. "Back to Units", "Previous", "Next")
               if (
-                !title ||
                 /^(back\s+to\s+units|back|previous|next)$/i.test(title) ||
                 (a.className && /back_link|lefttogglemenulink/i.test(a.className))
               ) {
@@ -415,7 +497,7 @@ export class PesuScraper {
 
               const onclick = a.getAttribute('onclick') || '';
               const href = (a.getAttribute('href') || '').trim();
-              const dataUrl = (a.getAttribute('data-url') || a.getAttribute('data-href') || '').trim();
+              const dataUrl = (a.getAttribute('data-url') || a.getAttribute('data-href') || a.getAttribute('data-link') || a.getAttribute('data-path') || a.getAttribute('data-src') || '').trim();
 
               if (onclick.includes('handleclassUnit') || onclick.includes('toggleLeftSideMenu')) {
                 continue;
@@ -425,7 +507,7 @@ export class PesuScraper {
               let docId = '';
 
               // Case A: loadIframe('path', 'docId')
-              const iframeMatch = onclick.match(/loadIframe\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/);
+              const iframeMatch = onclick.match(/loadIframe\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)/i);
               if (iframeMatch) {
                 path = iframeMatch[1].split('#')[0];
                 docId = iframeMatch[2];
@@ -433,7 +515,7 @@ export class PesuScraper {
 
               // Case B: downloadcoursedoc(id) / downloadcoursedocforstudent(id)
               if (!path) {
-                const docMatch = onclick.match(/downloadcoursedoc(?:forstudent)?\s*\(\s*['"]?(\d+)['"]?\s*\)/);
+                const docMatch = onclick.match(/downloadcoursedoc(?:forstudent)?\s*\(\s*['"]?(\d+)['"]?\s*\)/i);
                 if (docMatch) {
                   docId = docMatch[1];
                   path = `/Academy/s/studentProfilePESUAdmin/downloadcoursedoc/${docId}`;
@@ -442,48 +524,64 @@ export class PesuScraper {
 
               // Case C: window.open('url', ...) or location.href = 'url'
               if (!path) {
-                const winOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/);
+                const winOpenMatch = onclick.match(/window\.open\s*\(\s*['"]([^'"]+)['"]/i);
                 if (winOpenMatch) {
                   path = winOpenMatch[1];
                 } else {
-                  const locMatch = onclick.match(/(?:location\.href|location\.assign)\s*=\s*['"]([^'"]+)['"]/);
+                  const locMatch = onclick.match(/(?:location\.href|location\.assign)\s*=\s*['"]([^'"]+)['"]/i);
                   if (locMatch) {
                     path = locMatch[1];
                   }
                 }
               }
 
-              // Case D: Direct href link
+              // Case D: Any URL embedded in onclick
+              if (!path && onclick) {
+                const rawUrlMatch = onclick.match(/(https?:\/\/[^\s'")]+|\/Academy\/[^\s'")]+)/i);
+                if (rawUrlMatch) {
+                  path = rawUrlMatch[1];
+                }
+              }
+
+              // Case E: Direct href link
               if (!path && href && !href.startsWith('javascript:') && href !== '#' && !href.startsWith('#')) {
                 path = href;
               }
 
-              // Case E: data-url attribute
+              // Case F: data-url / data-href / data-link attribute
               if (!path && dataUrl && !dataUrl.startsWith('javascript:')) {
                 path = dataUrl;
+              }
+
+              // Case G: iframe/embed src
+              if (!path && (a.tagName === 'IFRAME' || a.tagName === 'EMBED')) {
+                const src = a.getAttribute('src');
+                if (src && !src.startsWith('javascript:')) {
+                  path = src;
+                }
               }
 
               if (!path) {
                 continue;
               }
 
-              // Normalize target URL
-              let fullUrl = path;
-              if (path.startsWith('//')) {
-                fullUrl = `https:${path}`;
-              } else if (path.startsWith('/')) {
-                fullUrl = `https://www.pesuacademy.com${path}`;
-              } else if (!/^https?:\/\//i.test(path)) {
-                fullUrl = `https://www.pesuacademy.com/Academy/s/${path}`;
+              // Normalize target URL & clean HTML entities like &amp;
+              let fullUrl = path.replace(/&amp;/g, '&').replace(/['"]+$/, '');
+              if (fullUrl.startsWith('//')) {
+                fullUrl = `https:${fullUrl}`;
+              } else if (fullUrl.startsWith('/')) {
+                fullUrl = `https://www.pesuacademy.com${fullUrl}`;
+              } else if (!/^https?:\/\//i.test(fullUrl)) {
+                fullUrl = `https://www.pesuacademy.com/Academy/s/${fullUrl}`;
               }
 
               // Convert Google Drive links to direct download
-              const gDriveFileMatch = fullUrl.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+              const gDriveFileMatch = fullUrl.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/i);
               if (gDriveFileMatch) {
                 fullUrl = `https://drive.google.com/uc?export=download&id=${gDriveFileMatch[1]}&confirm=t`;
                 if (!docId) docId = `gdrive_${gDriveFileMatch[1]}`;
               } else {
-                const gDriveIdMatch = fullUrl.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+                const gDriveIdMatch = fullUrl.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/i);
                 if (gDriveIdMatch) {
                   fullUrl = `https://drive.google.com/uc?export=download&id=${gDriveIdMatch[1]}&confirm=t`;
                   if (!docId) docId = `gdrive_${gDriveIdMatch[1]}`;
@@ -502,11 +600,46 @@ export class PesuScraper {
 
               files.push({
                 docId,
-                title: title || `Slide Document ${linkIndex}`,
+                title: title || cls.className || `Slide Document ${linkIndex}`,
                 className: cls.className,
                 relativeUrl: path,
                 fullUrl: fullUrl
               });
+            }
+
+            // Fallback: search raw HTML string for any files.pesuacademy.com or CloudFront S3 links
+            const unescapedHtml = cleanHtml.replace(/\\\//g, '/');
+            const s3Matches = Array.from(unescapedHtml.matchAll(/https?:\/\/files\.pesuacademy\.com\/elearning\/[^\s'"<>]+\.(?:pptx?|pdf|ppt)[^\s'"<>]*/gi));
+            for (const sm of s3Matches) {
+              const cleanS3Url = sm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '');
+              if (!seenUrls.has(cleanS3Url)) {
+                seenUrls.add(cleanS3Url);
+                linkIndex++;
+                files.push({
+                  docId: `s3_doc_${cls.classNo}_${linkIndex}`,
+                  title: cls.className || `Slide Presentation ${linkIndex}`,
+                  className: cls.className,
+                  relativeUrl: cleanS3Url,
+                  fullUrl: cleanS3Url
+                });
+              }
+            }
+
+            // Global Raw Regex for any generic presentations or documents
+            const anyDocMatches = Array.from(unescapedHtml.matchAll(/https?:\/\/[a-zA-Z0-9_.-]+\.(?:s3[a-zA-Z0-9_.-]*\.amazonaws\.com|cloudfront\.net|pesuacademy\.com)\/[^\s'"<>]+\.(?:pptx?|pdf|ppt)[^\s'"<>]*/gi));
+            for (const dm of anyDocMatches) {
+              const cleanDocUrl = dm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '');
+              if (!seenUrls.has(cleanDocUrl)) {
+                seenUrls.add(cleanDocUrl);
+                linkIndex++;
+                files.push({
+                  docId: `cloud_doc_${cls.classNo}_${linkIndex}`,
+                  title: cls.className || `Slide Document ${linkIndex}`,
+                  className: cls.className,
+                  relativeUrl: cleanDocUrl,
+                  fullUrl: cleanDocUrl
+                });
+              }
             }
 
             resolve(files);

@@ -198,20 +198,31 @@ export class CourseOrchestrator {
     }
 
     // 2. Service Worker context: convert to Data URL and download natively
-    let bytes = blob;
-    if (blob instanceof Blob) {
-      const arrayBuffer = await blob.arrayBuffer();
-      bytes = new Uint8Array(arrayBuffer);
-    } else if (!(blob instanceof Uint8Array)) {
-      bytes = new Uint8Array(blob);
-    }
+    let dataUrl = '';
+    if (typeof FileReader !== 'undefined') {
+      dataUrl = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onloadend = () => res(reader.result);
+        reader.onerror = rej;
+        const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
+        reader.readAsDataURL(fileBlob);
+      });
+    } else {
+      let bytes = blob;
+      if (blob instanceof Blob) {
+        const arrayBuffer = await blob.arrayBuffer();
+        bytes = new Uint8Array(arrayBuffer);
+      } else if (!(blob instanceof Uint8Array)) {
+        bytes = new Uint8Array(blob);
+      }
 
-    let binary = '';
-    const chunk = 16384;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      let binary = '';
+      const chunk = 16384;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
     }
-    const dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
 
     return new Promise((resolve, reject) => {
       chrome.downloads.download({
@@ -221,10 +232,48 @@ export class CourseOrchestrator {
         saveAs: false
       }, (downloadId) => {
         if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(downloadId);
+          return reject(new Error(chrome.runtime.lastError.message));
         }
+
+        if (!downloadId) {
+          return resolve(null);
+        }
+
+        // Wait for download to finish writing to disk or complete before resolving
+        let finished = false;
+        const finish = (id) => {
+          if (finished) return;
+          finished = true;
+          try { chrome.downloads.onChanged.removeListener(onChangedListener); } catch {}
+          clearTimeout(fallbackTimer);
+          resolve(id);
+        };
+
+        const onChangedListener = (delta) => {
+          if (delta.id === downloadId) {
+            if (delta.state && delta.state.current === 'complete') {
+              finish(downloadId);
+            } else if (delta.state && delta.state.current === 'interrupted') {
+              // User cancelled file save prompt or interrupted
+              finish(downloadId);
+            }
+          }
+        };
+
+        chrome.downloads.onChanged.addListener(onChangedListener);
+
+        // Immediate check in case download completed synchronously
+        chrome.downloads.search({ id: downloadId }, (items) => {
+          if (items && items[0] && (items[0].state === 'complete' || items[0].state === 'interrupted')) {
+            finish(downloadId);
+          }
+        });
+
+        // Safety fallback timeout: if Chrome takes more than 60s (e.g. user hasn't closed file prompt),
+        // resolve cleanly so background process is not blocked forever
+        const fallbackTimer = setTimeout(() => {
+          finish(downloadId);
+        }, 60000);
       });
     });
   }
@@ -243,12 +292,14 @@ export class CourseOrchestrator {
    * Fetches file buffer from PESU Academy slide download URL
    */
   async fetchFileBuffer(url, retries = CONFIG.DOWNLOADS.RETRY_ATTEMPTS) {
-    const isPesuUrl = url.includes('pesuacademy.com');
+    // Only internal session endpoints on www.pesuacademy.com require cookies.
+    // CloudFront / S3 pre-signed downloads (files.pesuacademy.com) or external links must omit credentials.
+    const isInternalSessionEndpoint = url.includes('www.pesuacademy.com/Academy/') && !url.includes('files.pesuacademy.com');
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         const response = await fetch(url, {
           method: 'GET',
-          credentials: isPesuUrl ? 'include' : 'omit'
+          credentials: isInternalSessionEndpoint ? 'include' : 'omit'
         });
 
         if (!response.ok) {
@@ -518,7 +569,9 @@ export class CourseOrchestrator {
         onProgress({
           status: 'merging',
           unitName: 'All Units',
-          message: `Packaging organized materials into ${zipFilename}...`
+          currentFile: `Saving ${zipFilename} to disk...`,
+          message: `Packaging and saving organized materials into ${zipFilename}...`,
+          percent: 99
         });
       }
 

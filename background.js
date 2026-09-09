@@ -50,8 +50,20 @@ let pendingDownloadName = null;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'OPEN_DOWNLOADS_FOLDER') {
-    if (request.downloadId && typeof request.downloadId === 'number') {
-      chrome.downloads.show(request.downloadId);
+    const dId = (request.downloadId && typeof request.downloadId === 'number') ? request.downloadId : null;
+    if (dId) {
+      chrome.downloads.search({ id: dId }, (items) => {
+        if (!chrome.runtime.lastError && items && items.length > 0 && items[0].state === 'complete') {
+          try {
+            chrome.downloads.show(dId);
+          } catch (e) {
+            chrome.downloads.showDefaultFolder();
+          }
+        } else {
+          // If the download is still in-progress or not complete, open downloads folder safely
+          chrome.downloads.showDefaultFolder();
+        }
+      });
     } else {
       chrome.downloads.showDefaultFolder();
     }
@@ -261,7 +273,8 @@ async function startBackgroundDownload(subjects, selectedUnits, options, isAllSu
       status: 'merging',
       subject: titlePrefix,
       unitName: 'All Courses',
-      currentFile: `Creating ${semesterZipFilename}...`,
+      currentFile: `Saving ${semesterZipFilename} to disk...`,
+      message: `Packaging and saving ${semesterZipFilename} to disk...`,
       percent: 99,
       logs: currentLogs
     });
