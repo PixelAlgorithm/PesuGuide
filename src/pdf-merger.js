@@ -12,7 +12,7 @@ export class PdfMerger {
    * @param {Function} onProgress
    * @returns {Promise<Uint8Array>} Merged PDF bytes
    */
-  static async mergePdfs(pdfList, unitTitle = '', onProgress = null) {
+  static async mergePdfs(pdfList, unitTitle = '', onProgress = null, checkCancelled = null) {
     const pdfLib = (typeof window !== 'undefined' && window.PDFLib) ||
                    (typeof self !== 'undefined' && self.PDFLib) ||
                    (typeof globalThis !== 'undefined' && globalThis.PDFLib);
@@ -31,6 +31,10 @@ export class PdfMerger {
     const failedFiles = [];
 
     for (let i = 0; i < pdfList.length; i++) {
+      if (checkCancelled && checkCancelled()) {
+        break;
+      }
+
       const item = pdfList[i];
       if (onProgress) {
         onProgress({
@@ -57,13 +61,22 @@ export class PdfMerger {
         console.error(`Failed to merge PDF '${item.title}':`, err);
         failedFiles.push({ title: item.title, error: err.message });
       }
+
+      // Micro-yield to allow GC to sweep and cancellation messages to be processed
+      if (i % 2 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    if (checkCancelled && checkCancelled()) {
+      return { bytes: new Uint8Array(0), totalPages: 0, mergedCount: 0, failedFiles: [] };
     }
 
     if (totalPagesMerged === 0 && pdfList.length > 0) {
       throw new Error('No valid PDF pages could be extracted to create merged unit PDF.');
     }
 
-    const mergedBytes = await mergedDoc.save();
+    const mergedBytes = await mergedDoc.save({ useObjectStreams: false });
     return {
       bytes: mergedBytes,
       totalPages: totalPagesMerged,

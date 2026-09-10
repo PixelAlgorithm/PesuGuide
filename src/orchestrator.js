@@ -7,6 +7,98 @@ import { CONFIG } from './config.js';
 import { PesuScraper } from './pesu-scraper.js';
 import { PptxConverter } from './pptx-converter.js';
 import { PdfMerger } from './pdf-merger.js';
+import { saveBlobToDB, deleteBlobFromDB } from './idb-helper.js';
+
+// Global registry tracking clean target filenames across all download contexts
+export const pendingFilenameMap = new Map();
+export const pendingFilenameQueue = [];
+
+export function registerDownloadFilename(url, filename) {
+  if (!filename) return;
+  const safeName = filename.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (url) {
+    pendingFilenameMap.set(url, safeName);
+  }
+  pendingFilenameQueue.push(safeName);
+  if (pendingFilenameQueue.length > 50) {
+    pendingFilenameQueue.shift();
+  }
+}
+
+async function pingOffscreen(timeoutMs = 400) {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve(false);
+      }
+    }, timeoutMs);
+
+    try {
+      chrome.runtime.sendMessage({ action: 'OFFSCREEN_PING' }, (res) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          if (chrome.runtime.lastError || !res || !res.ready) {
+            resolve(false);
+          } else {
+            resolve(true);
+          }
+        }
+      });
+    } catch (e) {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve(false);
+      }
+    }
+  });
+}
+
+async function waitForOffscreenReady(maxRetries = 25, intervalMs = 100) {
+  for (let i = 0; i < maxRetries; i++) {
+    const isReady = await pingOffscreen(300);
+    if (isReady) return true;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
+let offscreenCreating = null;
+async function ensureOffscreenDocument() {
+  if (typeof chrome === 'undefined' || !chrome.offscreen) return false;
+  try {
+    if (await chrome.offscreen.hasDocument()) {
+      const alive = await pingOffscreen(300);
+      if (alive) return true;
+      try {
+        await chrome.offscreen.closeDocument();
+      } catch (e) {}
+    }
+
+    if (offscreenCreating) {
+      await offscreenCreating;
+      return await waitForOffscreenReady(15, 100);
+    }
+
+    offscreenCreating = chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'Create zero-copy blob object URLs for file downloads'
+    });
+    await offscreenCreating;
+    offscreenCreating = null;
+
+    const ready = await waitForOffscreenReady(25, 100);
+    return ready;
+  } catch (e) {
+    offscreenCreating = null;
+    console.warn('Offscreen document creation error:', e);
+    return false;
+  }
+}
 
 /**
  * Formats subject title or code into a clean, readable slug
@@ -123,25 +215,29 @@ export class CourseOrchestrator {
   constructor() {
     this.scraper = new PesuScraper();
     this.isCancelled = false;
-    this.completedFiles = new Set();
     this.summary = {
-      subject: '',
       unitsFound: 0,
       filesFound: 0,
       filesDownloaded: 0,
       pptxConverted: 0,
       pdfsMerged: 0,
-      emptyUnits: [],
       failed: 0,
-      failedList: []
+      failedList: [],
+      emptyUnits: []
     };
+    this.completedFiles = new Set();
+    this.abortController = null;
+    this.currentTargetFilename = null;
   }
 
   /**
-   * Stop processing cleanly
+   * Stop processing cleanly and immediately abort active fetches
    */
   cancel() {
     this.isCancelled = true;
+    if (this.abortController) {
+      try { this.abortController.abort(); } catch {}
+    }
   }
 
   /**
@@ -172,15 +268,22 @@ export class CourseOrchestrator {
   }
 
   /**
-   * Triggers file download in Chrome with explicit MIME type, File object, and path
+   * Triggers file download in Chrome with explicit MIME type, File object, and path.
+   * Utilizes an Offscreen Document with IndexedDB to pass blobs with ZERO memory copy,
+   * completely eliminating giant base64 data URLs, CPU lockups, and browser crashes.
    */
   async triggerChromeDownload(blob, filepath) {
+    if (this.isCancelled) return null;
+
     const mimeType = filepath.endsWith('.zip') ? 'application/zip' : 'application/pdf';
     const basename = filepath.split(/[\\/]/).pop();
+    const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
 
-    // 1. Primary: HTML5 Anchor Tag Download if DOM is available
+    this.currentTargetFilename = filepath;
+    registerDownloadFilename(null, filepath);
+
+    // 1. Direct DOM context (Popup or Window)
     if (typeof document !== 'undefined' && document.body && typeof URL !== 'undefined' && URL.createObjectURL) {
-      const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
       const url = URL.createObjectURL(fileBlob);
       const a = document.createElement('a');
       a.href = url;
@@ -197,32 +300,118 @@ export class CourseOrchestrator {
       return Promise.resolve(Date.now());
     }
 
-    // 2. Service Worker context: convert to Data URL and download natively
+    // 2. Service Worker context: Attempt zero-copy Offscreen Document download first
+    try {
+      const hasOffscreen = await ensureOffscreenDocument();
+      if (hasOffscreen) {
+        const key = `dl_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+        await saveBlobToDB(key, fileBlob);
+
+        // Create zero-copy blob: URL in offscreen document
+        const blobUrl = await new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            deleteBlobFromDB(key).catch(() => {});
+            reject(new Error('Offscreen blob URL creation timed out (8s)'));
+          }, 8000);
+
+          chrome.runtime.sendMessage({
+            action: 'OFFSCREEN_CREATE_BLOB_URL',
+            key,
+            mimeType
+          }, (res) => {
+            clearTimeout(timeoutId);
+            if (chrome.runtime.lastError) {
+              deleteBlobFromDB(key).catch(() => {});
+              return reject(new Error(chrome.runtime.lastError.message));
+            }
+            if (res && res.success && res.url) {
+              resolve(res.url);
+            } else {
+              deleteBlobFromDB(key).catch(() => {});
+              reject(new Error(res?.error || 'Failed to create blob URL in offscreen worker'));
+            }
+          });
+        });
+
+        // Register blobUrl with desired filename in both local registry and background
+        registerDownloadFilename(blobUrl, filepath);
+
+        // Download natively via chrome.downloads in the Service Worker where the API is available
+        return await new Promise((resolve, reject) => {
+          chrome.downloads.download({
+            url: blobUrl,
+            filename: basename,
+            conflictAction: 'uniquify',
+            saveAs: false
+          }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+              chrome.runtime.sendMessage({ action: 'OFFSCREEN_REVOKE_BLOB_URL', url: blobUrl, key }).catch(() => {});
+              return reject(new Error(chrome.runtime.lastError.message));
+            }
+
+            if (!downloadId) {
+              chrome.runtime.sendMessage({ action: 'OFFSCREEN_REVOKE_BLOB_URL', url: blobUrl, key }).catch(() => {});
+              return resolve(null);
+            }
+
+            let finished = false;
+            const cleanup = () => {
+              if (finished) return;
+              finished = true;
+              try { chrome.downloads.onChanged.removeListener(onChangedListener); } catch {}
+              clearTimeout(fallbackTimer);
+              setTimeout(() => {
+                chrome.runtime.sendMessage({ action: 'OFFSCREEN_REVOKE_BLOB_URL', url: blobUrl, key }).catch(() => {});
+              }, 10000);
+              resolve(downloadId);
+            };
+
+            const onChangedListener = (delta) => {
+              if (delta.id === downloadId && delta.state) {
+                if (delta.state.current === 'complete' || delta.state.current === 'interrupted') {
+                  cleanup();
+                }
+              }
+            };
+
+            chrome.downloads.onChanged.addListener(onChangedListener);
+
+            chrome.downloads.search({ id: downloadId }, (items) => {
+              if (items && items[0] && (items[0].state === 'complete' || items[0].state === 'interrupted')) {
+                cleanup();
+              }
+            });
+
+            // Safety fallback timeout
+            const fallbackTimer = setTimeout(cleanup, 60000);
+          });
+        });
+      }
+    } catch (offscreenErr) {
+      console.warn('Offscreen document download failed, seamlessly falling back to Data URL download:', offscreenErr);
+    }
+
+    // 3. Fallback: Ultra-reliable Data URL download directly in Service Worker
     let dataUrl = '';
     if (typeof FileReader !== 'undefined') {
       dataUrl = await new Promise((res, rej) => {
         const reader = new FileReader();
         reader.onloadend = () => res(reader.result);
         reader.onerror = rej;
-        const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
         reader.readAsDataURL(fileBlob);
       });
     } else {
-      let bytes = blob;
-      if (blob instanceof Blob) {
-        const arrayBuffer = await blob.arrayBuffer();
-        bytes = new Uint8Array(arrayBuffer);
-      } else if (!(blob instanceof Uint8Array)) {
-        bytes = new Uint8Array(blob);
-      }
-
+      const arrayBuffer = await fileBlob.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
       let binary = '';
-      const chunk = 16384;
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      const chunk = 32768;
+      for (let i = 0; i < uint8.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunk));
       }
       dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
     }
+
+    registerDownloadFilename(dataUrl, filepath);
 
     return new Promise((resolve, reject) => {
       chrome.downloads.download({
@@ -231,49 +420,8 @@ export class CourseOrchestrator {
         conflictAction: 'uniquify',
         saveAs: false
       }, (downloadId) => {
-        if (chrome.runtime.lastError) {
-          return reject(new Error(chrome.runtime.lastError.message));
-        }
-
-        if (!downloadId) {
-          return resolve(null);
-        }
-
-        // Wait for download to finish writing to disk or complete before resolving
-        let finished = false;
-        const finish = (id) => {
-          if (finished) return;
-          finished = true;
-          try { chrome.downloads.onChanged.removeListener(onChangedListener); } catch {}
-          clearTimeout(fallbackTimer);
-          resolve(id);
-        };
-
-        const onChangedListener = (delta) => {
-          if (delta.id === downloadId) {
-            if (delta.state && delta.state.current === 'complete') {
-              finish(downloadId);
-            } else if (delta.state && delta.state.current === 'interrupted') {
-              // User cancelled file save prompt or interrupted
-              finish(downloadId);
-            }
-          }
-        };
-
-        chrome.downloads.onChanged.addListener(onChangedListener);
-
-        // Immediate check in case download completed synchronously
-        chrome.downloads.search({ id: downloadId }, (items) => {
-          if (items && items[0] && (items[0].state === 'complete' || items[0].state === 'interrupted')) {
-            finish(downloadId);
-          }
-        });
-
-        // Safety fallback timeout: if Chrome takes more than 60s (e.g. user hasn't closed file prompt),
-        // resolve cleanly so background process is not blocked forever
-        const fallbackTimer = setTimeout(() => {
-          finish(downloadId);
-        }, 60000);
+        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+        resolve(downloadId);
       });
     });
   }
@@ -292,14 +440,15 @@ export class CourseOrchestrator {
    * Fetches file buffer from PESU Academy slide download URL
    */
   async fetchFileBuffer(url, retries = CONFIG.DOWNLOADS.RETRY_ATTEMPTS) {
-    // Only internal session endpoints on www.pesuacademy.com require cookies.
-    // CloudFront / S3 pre-signed downloads (files.pesuacademy.com) or external links must omit credentials.
+    if (this.isCancelled) throw new Error('Download cancelled by user');
     const isInternalSessionEndpoint = url.includes('www.pesuacademy.com/Academy/') && !url.includes('files.pesuacademy.com');
     for (let attempt = 1; attempt <= retries; attempt++) {
+      if (this.isCancelled) throw new Error('Download cancelled by user');
       try {
         const response = await fetch(url, {
           method: 'GET',
-          credentials: isInternalSessionEndpoint ? 'include' : 'omit'
+          credentials: isInternalSessionEndpoint ? 'include' : 'omit',
+          signal: this.abortController ? this.abortController.signal : undefined
         });
 
         if (!response.ok) {
@@ -309,6 +458,7 @@ export class CourseOrchestrator {
         const arrayBuffer = await response.arrayBuffer();
         return new Uint8Array(arrayBuffer);
       } catch (err) {
+        if (this.isCancelled || err.name === 'AbortError') throw new Error('Download cancelled by user');
         if (attempt === retries) throw err;
         await new Promise(r => setTimeout(r, CONFIG.DOWNLOADS.RETRY_DELAY_MS * attempt));
       }
@@ -320,6 +470,7 @@ export class CourseOrchestrator {
    */
   async processSubject(subject, selectedUnitNumbers = null, options = {}, onProgress = null) {
     this.isCancelled = false;
+    this.abortController = new AbortController();
     const subjectSlug = formatSubjectSlug(subject);
     const subjectFolder = this.sanitizeName(subject.displayName || `${subject.code} - ${subject.title}`);
     const subjectKey = subject.id;
@@ -518,8 +669,11 @@ export class CourseOrchestrator {
                   message: `Merging page ${p.index} of ${p.total} for ${mergedFilename}... (${p.percent}%)`
                 });
               }
-            }
+            },
+            () => this.isCancelled
           );
+
+          if (this.isCancelled) break;
 
           // If ZIP mode: place merged unit PDF right at the root (or under folderPrefix)
           if (zip) {
@@ -539,6 +693,10 @@ export class CourseOrchestrator {
           }
 
           this.summary.pdfsMerged++;
+
+          // Immediately free up memory of unit slide buffers
+          validUnitPdfBuffers.length = 0;
+          unitPdfBuffers.length = 0;
 
           if (onProgress) {
             onProgress({
@@ -575,10 +733,11 @@ export class CourseOrchestrator {
         });
       }
 
+      // Fast, low-memory packaging: PDFs are already compressed, so STORE avoids CPU lockup and memory spikes
       const zipBlob = await zip.generateAsync({
         type: 'blob',
-        compression: 'DEFLATE',
-        compressionOptions: { level: 6 }
+        compression: 'STORE',
+        streamFiles: true
       });
 
       lastDownloadId = await this.triggerChromeDownload(zipBlob, zipFilename);

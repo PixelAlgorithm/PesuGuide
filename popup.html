@@ -17,8 +17,11 @@
           <p class="app-subtitle">Course Materials Organizer & PDF Merger</p>
         </div>
       </div>
-      <div id="connectionBadge" class="badge badge-warning">
-        <span class="status-dot"></span> Checking...
+      <div class="header-status">
+        <div id="connectionBadge" class="badge badge-warning">
+          <span class="status-dot"></span> Checking...
+        </div>
+        <button id="reloadExtBtn" class="btn-icon-badge" title="Reload Extension (Re-sync worker)" type="button">🔄</button>
       </div>
     </header>
 
@@ -73,6 +76,30 @@
         </div>
         <div id="unitsContainer" class="units-container">
           <div class="empty-hint">Select a course above to see available units.</div>
+        </div>
+      </section>
+
+      <!-- Add to Download List Bar -->
+      <div class="add-to-queue-row">
+        <button id="addToQueueBtn" class="btn btn-accent" type="button">
+          <span class="btn-icon">➕</span> Add to Download List
+        </button>
+        <span id="queueAddFeedback" class="queue-feedback hidden">✓ Added!</span>
+      </div>
+
+      <!-- Download List / Queue Section -->
+      <section id="queueSection" class="section-card queue-card hidden">
+        <div class="section-header">
+          <div class="queue-title-group">
+            <h2>📋 Download List</h2>
+            <span id="queueCountBadge" class="queue-count-pill">0</span>
+          </div>
+          <div class="queue-header-actions">
+            <a href="#" id="clearQueueBtn" class="clear-queue-link">Clear All</a>
+          </div>
+        </div>
+        <div id="queueItemsContainer" class="queue-items-container">
+          <!-- Populated dynamically -->
         </div>
       </section>
 

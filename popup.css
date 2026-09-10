@@ -76,6 +76,31 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-icon-badge {
+  background: rgba(240, 246, 252, 0.08);
+  border: 1px solid rgba(240, 246, 252, 0.15);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.2s ease;
+  line-height: 1.2;
+}
+
+.btn-icon-badge:hover {
+  background: rgba(56, 139, 253, 0.2);
+  border-color: #58a6ff;
+  color: #fff;
+  transform: scale(1.05);
+}
+
 .logo-group {
   display: flex;
   align-items: center;
@@ -700,6 +725,173 @@ label {
   padding: 12px 18px;
   border-top: 1px solid var(--border-color);
   background: #0d1117;
+}
+
+/* Add to Queue Button & Feedback */
+.add-to-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -2px;
+  margin-bottom: 2px;
+}
+
+.btn-accent {
+  background: linear-gradient(135deg, rgba(56, 139, 253, 0.15), rgba(163, 113, 247, 0.2));
+  border: 1px solid rgba(56, 139, 253, 0.4);
+  color: #79c0ff;
+  font-weight: 600;
+  width: 100%;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-accent:hover {
+  background: linear-gradient(135deg, rgba(56, 139, 253, 0.25), rgba(163, 113, 247, 0.35));
+  border-color: #58a6ff;
+  color: #f0f6fc;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(56, 139, 253, 0.2);
+}
+
+.btn-accent:active {
+  transform: translateY(0);
+}
+
+.queue-feedback {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #3fb950;
+  background: rgba(63, 185, 80, 0.15);
+  border: 1px solid rgba(63, 185, 80, 0.3);
+  padding: 4px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+/* Queue Card */
+.queue-card {
+  border-color: rgba(163, 113, 247, 0.25);
+  background: linear-gradient(180deg, rgba(22, 27, 34, 0.95), rgba(15, 20, 29, 0.95));
+}
+
+.queue-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-count-pill {
+  font-size: 11px;
+  font-weight: 700;
+  background: #a371f7;
+  color: #0b0f19;
+  border-radius: 10px;
+  padding: 1px 7px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.clear-queue-link {
+  font-size: 11.5px;
+  color: #ff7b72;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.clear-queue-link:hover {
+  text-decoration: underline;
+}
+
+.queue-items-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #0d1117;
+  border: 1px solid rgba(240, 246, 252, 0.08);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  gap: 8px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.queue-item:hover {
+  border-color: rgba(163, 113, 247, 0.35);
+  background: #161b22;
+}
+
+.queue-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.queue-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.queue-sem-tag {
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(56, 139, 253, 0.15);
+  color: #58a6ff;
+  border: 1px solid rgba(56, 139, 253, 0.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+.queue-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-item-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.queue-remove-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.queue-remove-btn:hover {
+  color: #ff7b72;
+  background: rgba(248, 81, 73, 0.15);
 }
 
 .hidden {

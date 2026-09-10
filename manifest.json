@@ -9,7 +9,8 @@
     "declarativeNetRequest",
     "tabs",
     "scripting",
-    "cookies"
+    "cookies",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>",
