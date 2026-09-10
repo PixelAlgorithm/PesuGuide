@@ -141,6 +141,7 @@
               <path d="m14 9 3 3-3 3"/>
             </svg>
             <h2>Units to Download</h2>
+            <span id="selectedUnitsBadge" class="unit-count-tag hidden">0 selected</span>
           </div>
           <div class="unit-toggle-links">
             <a href="#" id="selectAllUnits">Select All</a>
@@ -226,7 +227,16 @@
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
             </span>
-            <span class="checkbox-text">Generate merged <strong>subject_unit_x.pdf</strong></span>
+            <span class="checkbox-text">Generate merged unit PDFs (e.g. <strong>Unit 1.pdf, Unit 2.pdf</strong>)</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="mergeAllUnitsCheck" checked>
+            <span class="checkbox-custom" aria-hidden="true">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span class="checkbox-text">Merge PDFs across units into one file (e.g. <strong>Unit 1 + Unit 2</strong>)</span>
           </label>
           <label class="checkbox-label">
             <input type="checkbox" id="saveIndividualCheck" checked>

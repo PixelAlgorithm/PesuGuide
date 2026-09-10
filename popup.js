@@ -18,6 +18,7 @@ const subjectSelect = document.getElementById('subjectSelect');
 const processAllSubjectsCheck = document.getElementById('processAllSubjectsCheck');
 const unitsSection = document.getElementById('unitsSection');
 const unitsContainer = document.getElementById('unitsContainer');
+const selectedUnitsBadge = document.getElementById('selectedUnitsBadge');
 const selectAllUnits = document.getElementById('selectAllUnits');
 const deselectAllUnits = document.getElementById('deselectAllUnits');
 
@@ -32,6 +33,7 @@ const queueItemsContainer = document.getElementById('queueItemsContainer');
 const converterBadge = document.getElementById('converterBadge');
 const downloadModeSelect = document.getElementById('downloadModeSelect');
 const mergeUnitPdfsCheck = document.getElementById('mergeUnitPdfsCheck');
+const mergeAllUnitsCheck = document.getElementById('mergeAllUnitsCheck');
 const saveIndividualCheck = document.getElementById('saveIndividualCheck');
 
 const progressSection = document.getElementById('progressSection');
@@ -240,11 +242,15 @@ async function loadUnits(subjectId) {
         </label>
         <span class="unit-badge">${u.folderName}</span>
       `;
+      const cb = item.querySelector('.unit-checkbox');
+      if (cb) cb.addEventListener('change', updateStartButtonState);
       unitsContainer.appendChild(item);
     });
+    updateStartButtonState();
   } catch (err) {
     console.error('Failed to load units:', err);
     unitsContainer.innerHTML = `<div class="empty-hint">Failed to load units: ${err.message}</div>`;
+    updateStartButtonState();
   }
 }
 
@@ -252,6 +258,48 @@ async function loadUnits(subjectId) {
 function getSelectedUnitNumbers() {
   const checkboxes = document.querySelectorAll('.unit-checkbox:checked');
   return Array.from(checkboxes).map(cb => parseInt(cb.value, 10));
+}
+
+// Update dynamic label on Start Download button and unit selection badge
+function updateStartButtonState() {
+  if (!startBtn) return;
+  const queueCount = downloadQueue.length;
+  if (queueCount > 0) {
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download List (${queueCount} ${queueCount === 1 ? 'course' : 'courses'})</span>`;
+    if (selectedUnitsBadge) selectedUnitsBadge.classList.add('hidden');
+    return;
+  }
+
+  const isAllSubjects = processAllSubjectsCheck && processAllSubjectsCheck.checked;
+  if (isAllSubjects) {
+    const totalCourses = currentSubjects ? currentSubjects.length : 0;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download All Courses (${totalCourses})</span>`;
+    if (selectedUnitsBadge) selectedUnitsBadge.classList.add('hidden');
+    return;
+  }
+
+  const selectedUnits = getSelectedUnitNumbers();
+  const allUnitCheckboxes = document.querySelectorAll('.unit-checkbox');
+  const totalUnits = allUnitCheckboxes.length;
+
+  if (selectedUnitsBadge) {
+    if (totalUnits > 0) {
+      selectedUnitsBadge.textContent = `${selectedUnits.length} of ${totalUnits} selected`;
+      selectedUnitsBadge.classList.remove('hidden');
+    } else {
+      selectedUnitsBadge.classList.add('hidden');
+    }
+  }
+
+  if (totalUnits === 0) {
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Start Download</span>`;
+  } else if (selectedUnits.length === 0) {
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Select at least 1 unit</span>`;
+  } else if (selectedUnits.length === totalUnits) {
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download All Units (${totalUnits})</span>`;
+  } else {
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download Selected (Unit ${selectedUnits.join(', ')})</span>`;
+  }
 }
 
 // Load persistent queue from storage
@@ -286,12 +334,12 @@ function renderQueue() {
   if (count === 0) {
     queueSection.classList.add('hidden');
     queueItemsContainer.innerHTML = '';
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Start Download</span>`;
+    updateStartButtonState();
     return;
   }
 
   queueSection.classList.remove('hidden');
-  startBtn.innerHTML = `${SVG_ICONS.download}<span>Download List (${count} ${count === 1 ? 'course' : 'courses'})</span>`;
+  updateStartButtonState();
 
   queueItemsContainer.innerHTML = '';
   downloadQueue.forEach((item, index) => {
@@ -350,7 +398,7 @@ function addToQueue() {
     }
 
     const existingIndex = downloadQueue.findIndex(q => q.semesterId === semesterId && q.isAllSubjects);
-    const item = {
+    const newItem = {
       id: `queue_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       semesterId,
       semesterName,
@@ -382,7 +430,7 @@ function addToQueue() {
   }
 
   // Individual course selection
-  const selectedCourse = currentSubjects.find(s => s.id === subjectSelect.value);
+  const selectedCourse = currentSubjects.find(s => String(s.id) === String(subjectSelect.value)) || currentSubjects[0];
   if (!selectedCourse) {
     alert('Please select a course to add.');
     return;
@@ -459,16 +507,19 @@ processAllSubjectsCheck.addEventListener('change', () => {
     subjectSelect.disabled = false;
     unitsSection.classList.remove('hidden');
   }
+  updateStartButtonState();
 });
 
 selectAllUnits.addEventListener('click', (e) => {
   e.preventDefault();
   document.querySelectorAll('.unit-checkbox').forEach(cb => cb.checked = true);
+  updateStartButtonState();
 });
 
 deselectAllUnits.addEventListener('click', (e) => {
   e.preventDefault();
   document.querySelectorAll('.unit-checkbox').forEach(cb => cb.checked = false);
+  updateStartButtonState();
 });
 
 if (addToQueueBtn) addToQueueBtn.addEventListener('click', addToQueue);
@@ -607,8 +658,9 @@ chrome.runtime.onMessage.addListener((request) => {
 startBtn.addEventListener('click', async () => {
   const options = {
     downloadMode: downloadModeSelect ? downloadModeSelect.value : 'zip',
-    mergeUnitPdfs: mergeUnitPdfsCheck.checked,
-    saveIndividualFiles: saveIndividualCheck.checked
+    mergeUnitPdfs: mergeUnitPdfsCheck ? mergeUnitPdfsCheck.checked : true,
+    mergeAllUnits: mergeAllUnitsCheck ? mergeAllUnitsCheck.checked : true,
+    saveIndividualFiles: saveIndividualCheck ? saveIndividualCheck.checked : true
   };
 
   // If items exist in the Download List, execute queue batch download
@@ -644,19 +696,19 @@ startBtn.addEventListener('click', async () => {
     return;
   }
 
-  // Otherwise, run single-selection download directly
-  const isAllSubjects = processAllSubjectsCheck.checked;
+  // Otherwise, run single-selection download directly with selected units
+  const isAllSubjects = processAllSubjectsCheck && processAllSubjectsCheck.checked;
   let targetSubjects = [];
 
   if (isAllSubjects) {
     targetSubjects = currentSubjects;
   } else {
-    const selected = currentSubjects.find(s => s.id === subjectSelect.value);
+    const selected = currentSubjects.find(s => String(s.id) === String(subjectSelect.value)) || currentSubjects[0];
     if (selected) targetSubjects = [selected];
   }
 
-  if (targetSubjects.length === 0) {
-    alert('Please select at least one course to download, or add items to the Download List.');
+  if (!targetSubjects || targetSubjects.length === 0) {
+    alert('Please select at least one course to download.');
     return;
   }
 
@@ -672,17 +724,19 @@ startBtn.addEventListener('click', async () => {
   openFolderBtn.classList.add('hidden');
   progressSection.classList.remove('hidden');
   progressSpinner.classList.remove('hidden');
-  progressHeading.textContent = 'Starting background download...';
-  progressSubHeading.textContent = targetSubjects[0].displayName || targetSubjects[0].code;
-  logContent.innerHTML = '';
 
   const semesterName = semesterSelect.options[semesterSelect.selectedIndex]?.text || 'Semester';
+  const unitLabel = (!isAllSubjects && selectedUnits && selectedUnits.length > 0)
+    ? `Units ${selectedUnits.join(', ')}`
+    : 'All Units';
   const queueTitle = isAllSubjects 
     ? `All ${targetSubjects.length} Courses in ${semesterName}` 
-    : (targetSubjects[0].displayName || targetSubjects[0].code);
+    : `${targetSubjects[0].displayName || targetSubjects[0].code} (${unitLabel})`;
 
+  progressHeading.textContent = `Downloading ${targetSubjects[0].code}...`;
   progressSubHeading.textContent = queueTitle;
-  addLog(`Delegating ${queueTitle} to persistent background worker...`, 'info');
+  logContent.innerHTML = '';
+  addLog(`Starting download for ${queueTitle}...`, 'info');
 
   chrome.runtime.sendMessage({
     action: 'START_DOWNLOAD',

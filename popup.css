@@ -634,6 +634,19 @@ label {
   white-space: nowrap;
 }
 
+.unit-count-tag {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.12);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius-full);
+  padding: 1px 7px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+
 .queue-item-title {
   font-size: 12px;
   font-weight: 600;

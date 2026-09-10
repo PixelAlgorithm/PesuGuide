@@ -509,6 +509,7 @@ export class CourseOrchestrator {
 
     let overallFileIndex = 0;
     let lastDownloadId = null;
+    const allUnitsMergedList = [];
 
     for (let uIdx = 0; uIdx < units.length; uIdx++) {
       if (this.isCancelled) {
@@ -645,11 +646,11 @@ export class CourseOrchestrator {
 
       const validUnitPdfBuffers = unitPdfBuffers.filter(Boolean);
 
-      // Merge unit PDFs into readable subjectname_unit_x.pdf format
-      if (!this.isCancelled && validUnitPdfBuffers.length > 0 && options.mergeUnitPdfs !== false) {
+      // Merge unit PDFs into readable subjectname_unit_x.pdf format and/or queue for multi-unit merge
+      if (!this.isCancelled && validUnitPdfBuffers.length > 0 && (options.mergeUnitPdfs !== false || options.mergeAllUnits !== false)) {
         const mergedFilename = `${subjectSlug}_unit_${unitNumber}.pdf`;
 
-        if (onProgress) {
+        if (onProgress && options.mergeUnitPdfs !== false) {
           onProgress({
             status: 'merging',
             unitName: `Unit ${unitNumber}`,
@@ -662,7 +663,7 @@ export class CourseOrchestrator {
             validUnitPdfBuffers,
             `${subject.displayName} - Unit ${unitNumber}`,
             (p) => {
-              if (onProgress) {
+              if (onProgress && options.mergeUnitPdfs !== false) {
                 onProgress({
                   status: 'merging',
                   unitName: `Unit ${unitNumber}`,
@@ -675,35 +676,39 @@ export class CourseOrchestrator {
 
           if (this.isCancelled) break;
 
-          // If ZIP mode: place merged unit PDF right at the root (or under folderPrefix)
-          if (zip) {
-            const mergedPath = options.folderPrefix
-              ? `${options.folderPrefix}/${mergedFilename}`
-              : mergedFilename;
-            zip.file(mergedPath, mergeResult.bytes);
-          } else {
-            // Direct or merged_only mode:
-            // Download as subjectname_unit_x.pdf
-            const mergedPath = (options.downloadMode === 'merged_only')
-              ? `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${mergedFilename}`
-              : `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${mergedFilename}`;
+          if (options.mergeUnitPdfs !== false) {
+            // If ZIP mode: place merged unit PDF right at the root (or under folderPrefix)
+            if (zip) {
+              const mergedPath = options.folderPrefix
+                ? `${options.folderPrefix}/${mergedFilename}`
+                : mergedFilename;
+              zip.file(mergedPath, mergeResult.bytes);
+            } else {
+              // Direct or merged_only mode:
+              const mergedPath = (options.downloadMode === 'merged_only')
+                ? `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${mergedFilename}`
+                : `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${mergedFilename}`;
 
-            const mergedBlob = new Blob([mergeResult.bytes], { type: 'application/pdf' });
-            lastDownloadId = await this.triggerChromeDownload(mergedBlob, mergedPath);
+              const mergedBlob = new Blob([mergeResult.bytes], { type: 'application/pdf' });
+              lastDownloadId = await this.triggerChromeDownload(mergedBlob, mergedPath);
+            }
+
+            this.summary.pdfsMerged++;
+
+            if (onProgress) {
+              onProgress({
+                status: 'merged_complete',
+                unitName: `Unit ${unitNumber}`,
+                mergedFilename,
+                message: `Saved ${mergedFilename}`
+              });
+            }
           }
 
-          this.summary.pdfsMerged++;
-
-          // Immediately free up memory of unit slide buffers
-          validUnitPdfBuffers.length = 0;
-          unitPdfBuffers.length = 0;
-
-          if (onProgress) {
-            onProgress({
-              status: 'merged_complete',
-              unitName: `Unit ${unitNumber}`,
-              mergedFilename,
-              message: `Saved ${mergedFilename}`
+          if (options.mergeAllUnits !== false && mergeResult.bytes && mergeResult.bytes.length > 0) {
+            allUnitsMergedList.push({
+              buffer: mergeResult.bytes,
+              title: `Unit ${unitNumber}`
             });
           }
 
@@ -714,7 +719,83 @@ export class CourseOrchestrator {
             file: mergedFilename,
             reason: `Merge failed: ${err.message}`
           });
+        } finally {
+          validUnitPdfBuffers.length = 0;
+          unitPdfBuffers.length = 0;
         }
+      }
+    }
+
+    // Merge all processed units into a single combined master PDF if enabled (e.g. Unit 1 + Unit 2)
+    if (!this.isCancelled && allUnitsMergedList.length > 0 && options.mergeAllUnits !== false && (allUnitsMergedList.length > 1 || options.mergeUnitPdfs === false)) {
+      const activeUnitNums = units.filter(u => u.files && u.files.length > 0).map(u => u.unitNumber).sort((a, b) => a - b);
+      const unitsTag = activeUnitNums.length > 0 ? `units_${activeUnitNums.join('_')}` : 'all_units';
+      const allUnitsMergedFilename = `${subjectSlug}_${unitsTag}_merged.pdf`;
+
+      if (onProgress) {
+        onProgress({
+          status: 'merging',
+          unitName: 'All Selected Units',
+          message: `Merging Unit ${activeUnitNums.join(' + Unit ')} into ${allUnitsMergedFilename}...`
+        });
+      }
+
+      try {
+        let combinedPdfBytes = null;
+
+        if (allUnitsMergedList.length === 1) {
+          combinedPdfBytes = allUnitsMergedList[0].buffer;
+        } else {
+          const combinedResult = await PdfMerger.mergePdfs(
+            allUnitsMergedList,
+            `${subject.displayName} - Combined Units (${activeUnitNums.join(', ')})`,
+            (p) => {
+              if (onProgress) {
+                onProgress({
+                  status: 'merging',
+                  unitName: 'All Selected Units',
+                  message: `Combining Unit ${activeUnitNums.join(' + Unit ')}: page ${p.index}/${p.total} (${p.percent}%)`
+                });
+              }
+            },
+            () => this.isCancelled
+          );
+          combinedPdfBytes = combinedResult.bytes;
+        }
+
+        if (!this.isCancelled && combinedPdfBytes && combinedPdfBytes.length > 0) {
+          if (zip) {
+            const destPath = options.folderPrefix
+              ? `${options.folderPrefix}/${allUnitsMergedFilename}`
+              : allUnitsMergedFilename;
+            zip.file(destPath, combinedPdfBytes);
+          } else {
+            const destPath = (options.downloadMode === 'merged_only')
+              ? `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${allUnitsMergedFilename}`
+              : `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${allUnitsMergedFilename}`;
+
+            const combinedBlob = new Blob([combinedPdfBytes], { type: 'application/pdf' });
+            lastDownloadId = await this.triggerChromeDownload(combinedBlob, destPath);
+          }
+
+          this.summary.pdfsMerged++;
+
+          if (onProgress) {
+            onProgress({
+              status: 'merged_complete',
+              unitName: 'All Selected Units',
+              mergedFilename: allUnitsMergedFilename,
+              message: `✅ Created combined multi-unit PDF: ${allUnitsMergedFilename}`
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`Error creating combined units PDF ${allUnitsMergedFilename}:`, err);
+        this.summary.failedList.push({
+          unit: 'All Selected Units',
+          file: allUnitsMergedFilename,
+          reason: `Combined merge failed: ${err.message}`
+        });
       }
     }
 

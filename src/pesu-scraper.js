@@ -664,8 +664,8 @@ export class PesuScraper {
       return { subjectId, units: [], totalFiles: 0 };
     }
 
-    const targetUnits = selectedUnitNumbers 
-      ? units.filter(u => selectedUnitNumbers.includes(u.unitNumber))
+    const targetUnits = (selectedUnitNumbers && Array.isArray(selectedUnitNumbers) && selectedUnitNumbers.length > 0)
+      ? units.filter(u => selectedUnitNumbers.map(Number).includes(Number(u.unitNumber)))
       : units;
 
     const scannedUnits = [];
