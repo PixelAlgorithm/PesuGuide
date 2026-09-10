@@ -1,5 +1,9 @@
 # PesUGuide - Academic Course Materials Organizer
 
+[![GitHub Release](https://img.shields.io/github/v/release/PixelAlgorithm/PesuGuide?style=for-the-badge&color=6366f1&logo=github)](https://github.com/PixelAlgorithm/PesuGuide/releases/latest)
+[![Vibe Coded](https://img.shields.io/badge/Vibe%20Coded-100%25-818cf8?style=for-the-badge)](https://github.com/PixelAlgorithm/PesuGuide)
+[![Chrome Extension](https://img.shields.io/badge/Chrome%20Extension-Manifest%20v3-38bdf8?style=for-the-badge&logo=googlechrome&logoColor=white)](https://github.com/PixelAlgorithm/PesuGuide)
+
 > ⚡ **A vibe coded app** built for PESU Academy students.
 
 A vibe coded Google Chrome browser extension designed for **PESU Academy** (`https://www.pesuacademy.com`) to effortlessly automate discovering, downloading, organizing, converting (PPT/PPTX to PDF), and merging all course materials available under the **Slides** option. Pure vibes, zero friction, maximum productivity.
@@ -43,40 +47,51 @@ A vibe coded Google Chrome browser extension designed for **PESU Academy** (`htt
      ```
    - All merged PDFs preserve the exact visual ordering as presented on PESU Academy.
 
-5. **Reliability & Idempotency**:
+5. **Multi-Course Queue & Packaging Modes**:
+   - Queue multiple subjects or process an entire semester in one go.
+   - Choose between **Single Organized ZIP** (1-click download), **Merged Unit PDFs Only**, or **Direct Slide Folders**.
    - Remembers previously downloaded files to avoid redundant downloads.
-   - Safely resume interrupted downloads.
-   - Clean **Cancel / Stop** button that halts gracefully without corrupting completed files.
-   - Comprehensive summary modal at the end with download/conversion/merging counts and detailed error logs.
+   - Graceful **Cancel / Stop** button and detailed summary modal upon completion.
 
 ---
 
 ## 📦 Installation & Setup
 
-### Step 1: Load the Extension into Google Chrome
+### Option A: Quick Install via Release ZIP (Recommended)
 
-1. Open **Google Chrome**.
-2. In the URL bar, go to: `chrome://extensions/`
-3. Toggle on **Developer mode** in the top right corner.
-4. Click the **Load unpacked** button in the top left.
-5. In the file picker, select this project directory:
+1. Download the latest **[PesUGuide-v1.0.0.zip](https://github.com/PixelAlgorithm/PesuGuide/releases/latest)** from the Releases section.
+2. Extract the ZIP file on your computer.
+3. Open **Google Chrome** and navigate to:
    ```
-   /Users/prajwalm/Desktop/pesi
+   chrome://extensions/
    ```
-6. The extension **PesUGuide** is now installed and active!
+4. Toggle on **Developer mode** in the top-right corner.
+5. Click the **Load unpacked** button in the top-left corner.
+6. Select the unzipped `PesUGuide` folder.
+7. **PesUGuide** is now installed! Pin it in the Chrome toolbar for quick access.
 
-*(Tip: Click the Puzzle icon in Chrome's toolbar and pin the PesUGuide icon for quick access.)*
+---
+
+### Option B: Clone from GitHub (For Developers)
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/PixelAlgorithm/PesuGuide.git
+   ```
+2. Open Chrome and go to `chrome://extensions/`.
+3. Enable **Developer mode** in the top right.
+4. Click **Load unpacked** and choose the cloned repository folder.
 
 ---
 
 ### Step 2: (Optional) High-Fidelity PowerPoint Companion
 
-The extension works completely on its own using the built-in JavaScript conversion engine. 
+The extension works completely standalone using its built-in JavaScript conversion engine.
 
-If you want **100% native Microsoft Office vector fidelity** when converting PPT/PPTX presentations, launch the local companion converter:
+If you want **100% native Microsoft Office vector fidelity** when converting PPT/PPTX presentations on macOS, run the local companion:
 
 ```bash
-cd /Users/prajwalm/Desktop/pesi
+cd /path/to/PesuGuide
 python3 local_converter.py
 ```
 *It automatically connects to your installed `/Applications/Microsoft PowerPoint.app` on macOS! The extension popup will show a purple badge: `⚡ Microsoft PowerPoint (Native macOS)`.*
@@ -86,13 +101,13 @@ python3 local_converter.py
 ## 🚀 How to Use
 
 1. Navigate to **[PESU Academy](https://www.pesuacademy.com/Academy/)** in Google Chrome.
-2. Sign in with your username, password, or OTP.
+2. Sign in with your student credentials.
 3. Click the **PesUGuide** extension icon in Chrome toolbar.
 4. In the popup:
    - Verify the status badge says **Connected** (green).
    - Select your **Semester** (e.g. `Sem-5`).
-   - Select a specific **Course / Subject** (e.g. `UE24CS341A - Software Engineering`) or check **Process All Courses**.
-   - Check/uncheck the specific **Units** you wish to download (or keep all selected).
+   - Select a specific **Course / Subject** or check **Process All Courses**.
+   - Check/uncheck the specific **Units** you wish to download.
    - Choose whether to generate merged **Unit X.pdf** and individual slide files.
    - Click **Start Download**.
 5. Watch the live progress bar, file status, and activity log.
@@ -103,7 +118,7 @@ python3 local_converter.py
 ## 🛠️ Project Structure
 
 ```
-pesi/
+PesuGuide/
 ├── manifest.json          # Chrome MV3 Extension Manifest
 ├── rules.json             # DeclarativeNetRequest CORS rules
 ├── popup.html             # Sleek extension user interface
@@ -131,5 +146,3 @@ pesi/
 <p align="center">
   A vibe coded app • made by <a href="https://github.com/PixelAlgorithm"><strong>PixelAlgorithm</strong></a>
 </p>
-
-
