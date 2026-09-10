@@ -33,7 +33,7 @@
         <div class="brand-meta">
           <div class="title-row">
             <h1 class="app-title">PesUGuide</h1>
-            <span class="version-tag">v1.1</span>
+            <span class="version-tag">v1.1.0</span>
           </div>
           <p class="app-subtitle">Course Materials &amp; Slides Organizer</p>
         </div>
@@ -53,6 +53,27 @@
         </button>
       </div>
     </header>
+
+    <!-- Update Notification Banner (Hidden by default) -->
+    <div id="updateBanner" class="update-banner hidden">
+      <div class="update-banner-content">
+        <div class="update-banner-icon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <div class="update-banner-text">
+          <span class="update-banner-title">Update available: <strong id="updateVersionStr">v1.2.0</strong></span>
+          <span class="update-banner-sub">Click to download latest version</span>
+        </div>
+      </div>
+      <div class="update-banner-actions">
+        <button id="downloadUpdateBtn" class="btn btn-sm btn-primary" type="button">Update</button>
+        <button id="dismissUpdateBtn" class="update-dismiss-btn" type="button" title="Dismiss">&times;</button>
+      </div>
+    </div>
 
     <!-- Session Warning Card (Shown if not logged in) -->
     <div id="loginPromptCard" class="card card-warning hidden">

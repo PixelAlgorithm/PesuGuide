@@ -142,6 +142,7 @@ async function init() {
   } catch (e) {}
 
   await loadSemesters();
+  checkForUpdates();
 }
 
 // Load Semesters
@@ -854,6 +855,91 @@ function showSummaryModal(sum) {
 
 closeModalBtn.addEventListener('click', () => summaryModal.classList.add('hidden'));
 modalDoneBtn.addEventListener('click', () => summaryModal.classList.add('hidden'));
+
+// Check for updates from GitHub Releases
+async function checkForUpdates() {
+  const updateBanner = document.getElementById('updateBanner');
+  const updateVersionStr = document.getElementById('updateVersionStr');
+  const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
+  const dismissUpdateBtn = document.getElementById('dismissUpdateBtn');
+  if (!updateBanner || !downloadUpdateBtn) return;
+
+  if (dismissUpdateBtn) {
+    dismissUpdateBtn.addEventListener('click', () => {
+      updateBanner.classList.add('hidden');
+    });
+  }
+
+  try {
+    const currentVersion = (chrome.runtime && chrome.runtime.getManifest) 
+      ? chrome.runtime.getManifest().version 
+      : '1.1.0';
+    const response = await fetch('https://api.github.com/repos/PixelAlgorithm/PesuGuide/releases/latest', {
+      headers: { 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (!response.ok) return;
+
+    const release = await response.json();
+    const remoteTag = release.tag_name || '';
+    const remoteVersion = remoteTag.replace(/^v/i, '').trim();
+
+    if (isNewerVersion(remoteVersion, currentVersion)) {
+      if (updateVersionStr) updateVersionStr.textContent = remoteTag;
+      updateBanner.classList.remove('hidden');
+
+      downloadUpdateBtn.onclick = () => {
+        const zipAsset = release.assets?.find(a => a.name.endsWith('.zip'));
+        const downloadUrl = zipAsset ? zipAsset.browser_download_url : (release.zipball_url || release.html_url);
+
+        if (chrome.downloads && chrome.downloads.download && zipAsset) {
+          downloadUpdateBtn.disabled = true;
+          downloadUpdateBtn.textContent = 'Downloading...';
+          chrome.downloads.download({
+            url: downloadUrl,
+            filename: zipAsset.name,
+            saveAs: false
+          }, () => {
+            downloadUpdateBtn.textContent = 'Downloaded!';
+            setTimeout(() => {
+              downloadUpdateBtn.textContent = 'View Release';
+              downloadUpdateBtn.disabled = false;
+              downloadUpdateBtn.onclick = () => {
+                if (chrome.tabs && chrome.tabs.create) {
+                  chrome.tabs.create({ url: release.html_url });
+                } else {
+                  window.open(release.html_url, '_blank');
+                }
+              };
+            }, 2500);
+          });
+        } else {
+          if (chrome.tabs && chrome.tabs.create) {
+            chrome.tabs.create({ url: release.html_url });
+          } else {
+            window.open(release.html_url, '_blank');
+          }
+        }
+      };
+    }
+  } catch (err) {
+    console.debug('Update check skipped:', err);
+  }
+}
+
+function isNewerVersion(remote, current) {
+  if (!remote || !current) return false;
+  const rParts = remote.split('.').map(n => parseInt(n, 10) || 0);
+  const cParts = current.split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(rParts.length, cParts.length);
+
+  for (let i = 0; i < len; i++) {
+    const r = rParts[i] || 0;
+    const c = cParts[i] || 0;
+    if (r > c) return true;
+    if (r < c) return false;
+  }
+  return false;
+}
 
 // Initialize on popup load
 init();
