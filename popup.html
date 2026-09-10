@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PESU Course Downloader</title>
+  <title>PesUGuide - Academic Course Materials Organizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -11,29 +14,73 @@
     <!-- Header -->
     <header class="app-header">
       <div class="logo-group">
-        <div class="logo-icon">📚</div>
-        <div>
-          <h1 class="app-title">PESU Slides Downloader</h1>
-          <p class="app-subtitle">Course Materials Organizer & PDF Merger</p>
+        <!-- Brand Vector Emblem -->
+        <div class="logo-icon-wrapper" aria-hidden="true">
+          <svg class="brand-logo-svg" width="28" height="28" viewBox="0 0 32 32" fill="none">
+            <rect width="32" height="32" rx="8" fill="#131722"/>
+            <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" stroke="rgba(255,255,255,0.12)"/>
+            <!-- Left Wing -->
+            <path d="M15 22L7.5 18.8V11.2L15 14.2V22Z" fill="#4338CA"/>
+            <path d="M15 20.2L9 17.6V12.4L15 15V20.2Z" fill="#6366F1"/>
+            <!-- Right Wing -->
+            <path d="M17 22L24.5 18.8V11.2L17 14.2V22Z" fill="#1D4ED8"/>
+            <path d="M17 20.2L23 17.6V12.4L17 15V20.2Z" fill="#3B82F6"/>
+            <!-- Center Compass Arrow -->
+            <path d="M16 5.5L19 12.5L16 10.8L13 12.5L16 5.5Z" fill="#F8FAFC"/>
+            <circle cx="16" cy="4.2" r="1.2" fill="#38BDF8"/>
+          </svg>
+        </div>
+        <div class="brand-meta">
+          <div class="title-row">
+            <h1 class="app-title">PesUGuide</h1>
+            <span class="version-tag">v1.1</span>
+          </div>
+          <p class="app-subtitle">Course Materials &amp; Slides Organizer</p>
         </div>
       </div>
       <div class="header-status">
         <div id="connectionBadge" class="badge badge-warning">
-          <span class="status-dot"></span> Checking...
+          <span class="status-dot"></span>
+          <span class="badge-text">Checking...</span>
         </div>
-        <button id="reloadExtBtn" class="btn-icon-badge" title="Reload Extension (Re-sync worker)" type="button">🔄</button>
+        <button id="reloadExtBtn" class="btn-icon-badge" title="Reload Extension (Re-sync worker)" type="button" aria-label="Reload extension">
+          <svg class="svg-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 21h5v-5"/>
+          </svg>
+        </button>
       </div>
     </header>
 
     <!-- Session Warning Card (Shown if not logged in) -->
     <div id="loginPromptCard" class="card card-warning hidden">
-      <div class="card-icon">🔒</div>
+      <div class="card-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="18" height="11" x="3" y="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+      </div>
       <div class="card-content">
         <h3>PESU Academy Login Required</h3>
-        <p>Please open PESU Academy in Chrome, sign in with your credentials, and click Refresh.</p>
+        <p>Please open PESU Academy in Chrome, sign in with your student credentials, and click Refresh.</p>
         <div class="btn-group">
-          <button id="openPesuBtn" class="btn btn-primary btn-sm">Open PESU Academy</button>
-          <button id="refreshLoginBtn" class="btn btn-secondary btn-sm">Refresh Status</button>
+          <button id="openPesuBtn" class="btn btn-primary btn-sm">
+            <svg class="btn-svg-sm" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            <span>Open PESU Academy</span>
+          </button>
+          <button id="refreshLoginBtn" class="btn btn-secondary btn-sm">
+            <svg class="btn-svg-sm" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+            <span>Refresh Status</span>
+          </button>
         </div>
       </div>
     </div>
@@ -45,22 +92,41 @@
         <div class="form-row">
           <div class="form-group flex-1">
             <label for="semesterSelect">Semester</label>
-            <select id="semesterSelect" class="form-control">
-              <option value="" disabled selected>Loading semesters...</option>
-            </select>
+            <div class="select-wrapper">
+              <select id="semesterSelect" class="form-control">
+                <option value="" disabled selected>Loading semesters...</option>
+              </select>
+              <span class="select-arrow" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </span>
+            </div>
           </div>
           <div class="form-group flex-2">
             <label for="subjectSelect">Course / Subject</label>
-            <select id="subjectSelect" class="form-control">
-              <option value="" disabled selected>Select a semester first</option>
-            </select>
+            <div class="select-wrapper">
+              <select id="subjectSelect" class="form-control">
+                <option value="" disabled selected>Select a semester first</option>
+              </select>
+              <span class="select-arrow" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </span>
+            </div>
           </div>
         </div>
 
         <div class="checkbox-row">
           <label class="checkbox-label">
             <input type="checkbox" id="processAllSubjectsCheck">
-            <span>Process <strong>All Courses</strong> in this semester</span>
+            <span class="checkbox-custom" aria-hidden="true">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span class="checkbox-text">Process <strong>All Courses</strong> in this semester</span>
           </label>
         </div>
       </section>
@@ -68,30 +134,52 @@
       <!-- Unit Filter Section -->
       <section id="unitsSection" class="section-card">
         <div class="section-header">
-          <h2>Units to Download</h2>
+          <div class="section-title-group">
+            <svg class="section-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="18" height="18" x="3" y="3" rx="2"/>
+              <path d="M9 3v18"/>
+              <path d="m14 9 3 3-3 3"/>
+            </svg>
+            <h2>Units to Download</h2>
+          </div>
           <div class="unit-toggle-links">
-            <a href="#" id="selectAllUnits">Select All</a> • 
+            <a href="#" id="selectAllUnits">Select All</a>
+            <span class="separator">•</span>
             <a href="#" id="deselectAllUnits">Deselect All</a>
           </div>
         </div>
         <div id="unitsContainer" class="units-container">
-          <div class="empty-hint">Select a course above to see available units.</div>
+          <div class="empty-hint">Select a course above to view available syllabus units.</div>
         </div>
       </section>
 
       <!-- Add to Download List Bar -->
       <div class="add-to-queue-row">
         <button id="addToQueueBtn" class="btn btn-accent" type="button">
-          <span class="btn-icon">➕</span> Add to Download List
+          <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span>Add to Download List</span>
         </button>
-        <span id="queueAddFeedback" class="queue-feedback hidden">✓ Added!</span>
+        <span id="queueAddFeedback" class="queue-feedback hidden">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <span>Added to list</span>
+        </span>
       </div>
 
       <!-- Download List / Queue Section -->
       <section id="queueSection" class="section-card queue-card hidden">
         <div class="section-header">
           <div class="queue-title-group">
-            <h2>📋 Download List</h2>
+            <svg class="section-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <path d="M15 2H9a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1Z"/>
+              <path d="m9 14 2 2 4-4"/>
+            </svg>
+            <h2>Download List</h2>
             <span id="queueCountBadge" class="queue-count-pill">0</span>
           </div>
           <div class="queue-header-actions">
@@ -106,25 +194,48 @@
       <!-- Options Section -->
       <section class="section-card options-card">
         <div class="section-header">
-          <h2>Download Format & Options</h2>
+          <div class="section-title-group">
+            <svg class="section-svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <h2>Format &amp; Preferences</h2>
+          </div>
           <span id="converterBadge" class="converter-tag">Checking converter...</span>
         </div>
-        <div class="form-group" style="margin-bottom: 8px;">
+        <div class="form-group" style="margin-bottom: 10px;">
           <label for="downloadModeSelect">Packaging Mode</label>
-          <select id="downloadModeSelect" class="form-control">
-            <option value="zip" selected>📦 Single Organized ZIP (Recommended - 1 Click, No Popups)</option>
-            <option value="merged_only">📄 Merged Unit PDFs Only (1 file per unit)</option>
-            <option value="direct">📁 Individual Folders & Slides Directly</option>
-          </select>
+          <div class="select-wrapper">
+            <select id="downloadModeSelect" class="form-control">
+              <option value="zip" selected>Single Organized ZIP (Recommended • 1 Click)</option>
+              <option value="merged_only">Merged Unit PDFs Only (1 clean file per unit)</option>
+              <option value="direct">Individual Slide PDFs &amp; Folders</option>
+            </select>
+            <span class="select-arrow" aria-hidden="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </span>
+          </div>
         </div>
         <div class="options-grid">
           <label class="checkbox-label">
             <input type="checkbox" id="mergeUnitPdfsCheck" checked>
-            <span>Include merged <strong>subjectname_unit_x.pdf</strong></span>
+            <span class="checkbox-custom" aria-hidden="true">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span class="checkbox-text">Generate merged <strong>subject_unit_x.pdf</strong></span>
           </label>
           <label class="checkbox-label">
             <input type="checkbox" id="saveIndividualCheck" checked>
-            <span>Include individual slide PDFs</span>
+            <span class="checkbox-custom" aria-hidden="true">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span class="checkbox-text">Include individual slide PDFs</span>
           </label>
         </div>
       </section>
@@ -136,7 +247,7 @@
             <span id="progressSpinner" class="spinner"></span>
             <div>
               <h3 id="progressHeading">Preparing...</h3>
-              <p id="progressSubHeading" class="progress-sub">Initializing queue...</p>
+              <p id="progressSubHeading" class="progress-sub">Initializing tasks...</p>
             </div>
           </div>
           <div id="progressPercent" class="progress-percent">0%</div>
@@ -162,7 +273,10 @@
         <!-- Live Activity Log -->
         <div class="log-container">
           <div class="log-header">
-            <span>Activity Log</span>
+            <div class="log-title-row">
+              <span class="terminal-dot"></span>
+              <span>Activity Log</span>
+            </div>
             <a href="#" id="clearLogBtn">Clear</a>
           </div>
           <div id="logContent" class="log-content"></div>
@@ -172,13 +286,24 @@
       <!-- Action Buttons -->
       <div class="actions-row">
         <button id="startBtn" class="btn btn-primary btn-lg">
-          <span class="btn-icon">⬇️</span> Start Download
+          <svg class="btn-svg-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>Start Download</span>
         </button>
         <button id="cancelBtn" class="btn btn-danger btn-lg hidden">
-          <span class="btn-icon">⏹️</span> Cancel / Stop
+          <svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="14" height="14" x="5" y="5" rx="2"/>
+          </svg>
+          <span>Cancel / Stop</span>
         </button>
         <button id="openFolderBtn" class="btn btn-secondary btn-lg hidden">
-          <span class="btn-icon">📁</span> Open Output Folder
+          <svg class="btn-svg-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+          </svg>
+          <span>Open Output Folder</span>
         </button>
       </div>
     </main>
@@ -187,8 +312,14 @@
     <div id="summaryModal" class="modal-overlay hidden">
       <div class="modal-box">
         <div class="modal-header">
-          <h2>🎉 Download Summary</h2>
-          <button id="closeModalBtn" class="modal-close">&times;</button>
+          <div class="modal-title-group">
+            <svg class="modal-title-svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+              <polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+            <h2>Download Summary</h2>
+          </div>
+          <button id="closeModalBtn" class="modal-close" type="button" aria-label="Close modal">&times;</button>
         </div>
         <div class="modal-body">
           <div class="stats-grid">
@@ -206,7 +337,7 @@
             </div>
             <div class="stat-card">
               <span class="stat-num text-info" id="statConverted">0</span>
-              <span class="stat-desc">PPT/PPTX Converted</span>
+              <span class="stat-desc">PPTX Converted</span>
             </div>
             <div class="stat-card">
               <span class="stat-num text-primary" id="statMerged">0</span>
@@ -218,17 +349,27 @@
             </div>
           </div>
 
-          <div id="emptyUnitsNotice" class="alert-box alert-warning hidden" style="margin-top: 10px; padding: 10px; border-radius: 6px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; font-size: 13px;">
-            ⚠️ <strong>College Notice:</strong> <span id="emptyUnitsList"></span> had 0 slides uploaded by faculty on PESU Academy.
+          <div id="emptyUnitsNotice" class="alert-box alert-warning hidden">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div><strong>Notice:</strong> <span id="emptyUnitsList"></span> had 0 slides uploaded by faculty on PESU Academy.</div>
           </div>
 
           <div id="failedFilesSection" class="failed-section hidden">
-            <h4>Failed Items & Errors:</h4>
+            <h4>Failed Items &amp; Errors:</h4>
             <div id="failedList" class="failed-list"></div>
           </div>
         </div>
         <div class="modal-footer">
-          <button id="modalOpenFolderBtn" class="btn btn-primary">Open Folder</button>
+          <button id="modalOpenFolderBtn" class="btn btn-primary">
+            <svg class="btn-svg-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 8 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+            </svg>
+            <span>Open Folder</span>
+          </button>
           <button id="modalDoneBtn" class="btn btn-secondary">Done</button>
         </div>
       </div>
@@ -236,7 +377,14 @@
 
     <!-- Footer -->
     <footer class="app-footer">
-      <span>Unit-wise slides organized in <code>~/Downloads/PESU Academy</code></span>
+      <div class="footer-content">
+        <span>made by <a href="https://github.com/PixelAlgorithm" target="_blank" rel="noopener noreferrer" class="footer-link" id="githubAuthorLink">
+          <svg class="github-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          PixelAlgorithm
+        </a></span>
+      </div>
     </footer>
   </div>
 

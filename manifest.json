@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PESU Academy Course Downloader & Organizer",
+  "name": "PesUGuide - Academic Course Materials Organizer",
   "version": "1.0.0",
-  "description": "Automates downloading, organizing, PPTX conversion, and unit-wise PDF merging of slides from PESU Academy.",
+  "description": "The ultimate course materials guide and automated slide organizer for PESU Academy.",
   "permissions": [
     "downloads",
     "storage",
@@ -20,7 +20,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "PESU Academy Downloader",
+    "default_title": "PesUGuide",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

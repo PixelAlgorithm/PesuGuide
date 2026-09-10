@@ -79,14 +79,22 @@ function addLog(message, type = 'info') {
   logContent.scrollTop = logContent.scrollHeight;
 }
 
+// Modern Vector SVG Icons
+const SVG_ICONS = {
+  download: '<svg class="btn-svg-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  stop: '<svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',
+  trash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>',
+  check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+};
+
 // Check local converter
 async function updateConverterStatus() {
   const status = await PptxConverter.checkLocalServer();
   if (status.available) {
-    converterBadge.textContent = `⚡ ${status.engine}`;
+    converterBadge.textContent = status.engine || 'Local Converter';
     converterBadge.title = 'Local PowerPoint/LibreOffice converter active (High fidelity)';
   } else {
-    converterBadge.textContent = '📦 Built-in JS Engine';
+    converterBadge.textContent = 'Built-in JS Engine';
     converterBadge.title = 'Using in-browser client-side PPTX converter';
   }
 }
@@ -278,12 +286,12 @@ function renderQueue() {
   if (count === 0) {
     queueSection.classList.add('hidden');
     queueItemsContainer.innerHTML = '';
-    startBtn.innerHTML = '<span class="btn-icon">⬇️</span> Start Download';
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Start Download</span>`;
     return;
   }
 
   queueSection.classList.remove('hidden');
-  startBtn.innerHTML = `<span class="btn-icon">⬇️</span> Download List (${count} ${count === 1 ? 'item' : 'items'})`;
+  startBtn.innerHTML = `${SVG_ICONS.download}<span>Download List (${count} ${count === 1 ? 'course' : 'courses'})</span>`;
 
   queueItemsContainer.innerHTML = '';
   downloadQueue.forEach((item, index) => {
@@ -297,7 +305,9 @@ function renderQueue() {
         </div>
         <div class="queue-item-detail">${item.unitSummary}</div>
       </div>
-      <button type="button" class="queue-remove-btn" data-index="${index}" title="Remove from list">🗑️</button>
+      <button type="button" class="queue-remove-btn" data-index="${index}" title="Remove from list">
+        ${SVG_ICONS.trash}
+      </button>
     `;
     queueItemsContainer.appendChild(row);
   });
@@ -312,9 +322,9 @@ function renderQueue() {
 }
 
 // Show visual feedback pill
-function showQueueFeedback(text = '✓ Added!') {
+function showQueueFeedback(text = 'Added to list') {
   if (!queueAddFeedback) return;
-  queueAddFeedback.textContent = text;
+  queueAddFeedback.innerHTML = `${SVG_ICONS.check}<span>${text}</span>`;
   queueAddFeedback.classList.remove('hidden');
   clearTimeout(feedbackTimer);
   feedbackTimer = setTimeout(() => {
@@ -357,13 +367,14 @@ function addToQueue() {
     };
 
     if (existingIndex >= 0) {
-      downloadQueue[existingIndex] = item;
-      showQueueFeedback('✓ Updated in list!');
+      downloadQueue[existingIndex] = newItem;
+      showQueueFeedback('Updated in list');
     } else {
       // Remove any individual courses from this semester since user is adding the whole semester
       downloadQueue = downloadQueue.filter(q => !(q.semesterId === semesterId && !q.isAllSubjects));
-      downloadQueue.push(item);
-      showQueueFeedback(`✓ Added ${semesterName} (${currentSubjects.length} courses)!`);
+      downloadQueue.push(newItem);
+      renderQueue();
+      showQueueFeedback(`Added ${semesterName} (${currentSubjects.length} courses)`);
     }
 
     saveQueue();
@@ -395,7 +406,7 @@ function addToQueue() {
   }
 
   const existingCourseIdx = downloadQueue.findIndex(q => !q.isAllSubjects && q.subject && q.subject.id === selectedCourse.id);
-  const courseItem = {
+  const newItem = {
     id: `queue_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
     semesterId,
     semesterName,
@@ -412,11 +423,12 @@ function addToQueue() {
   };
 
   if (existingCourseIdx >= 0) {
-    downloadQueue[existingCourseIdx] = courseItem;
-    showQueueFeedback('✓ Course updated!');
+    downloadQueue[existingCourseIdx] = newItem;
+    showQueueFeedback('Course updated in list');
   } else {
-    downloadQueue.push(courseItem);
-    showQueueFeedback(`✓ Added ${selectedCourse.code}!`);
+    downloadQueue.push(newItem);
+    renderQueue();
+    showQueueFeedback(`Added ${selectedCourse.code}`);
   }
 
   saveQueue();
@@ -464,13 +476,15 @@ if (clearQueueBtn) clearQueueBtn.addEventListener('click', clearQueue);
 
 if (reloadExtBtn) {
   reloadExtBtn.addEventListener('click', () => {
-    reloadExtBtn.textContent = '⏳';
-    addLog('Reloading extension...', 'info');
-    if (chrome.runtime.reload) {
-      chrome.runtime.reload();
-    } else {
-      location.reload();
-    }
+    reloadExtBtn.classList.add('rotating');
+    addLog('Reloading extension worker...', 'info');
+    setTimeout(() => {
+      if (chrome.runtime.reload) {
+        chrome.runtime.reload();
+      } else {
+        location.reload();
+      }
+    }, 150);
   });
 }
 
@@ -695,8 +709,8 @@ startBtn.addEventListener('click', async () => {
 // Cancel button: signals background worker to stop
 cancelBtn.addEventListener('click', () => {
   cancelBtn.disabled = true;
-  cancelBtn.textContent = 'Stopping...';
-  addLog('⏹️ Stopping background download...', 'warn');
+  cancelBtn.innerHTML = `${SVG_ICONS.stop}<span>Stopping...</span>`;
+  addLog('Stopping background download...', 'warn');
 
   chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOAD' }, () => {
     // Immediately update UI to stopped/cancelled state
@@ -704,7 +718,7 @@ cancelBtn.addEventListener('click', () => {
     startBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     cancelBtn.disabled = false;
-    cancelBtn.innerHTML = '<span class="btn-icon">⏹️</span> Cancel / Stop';
+    cancelBtn.innerHTML = `${SVG_ICONS.stop}<span>Cancel / Stop</span>`;
     progressHeading.textContent = 'Cancelled';
     progressSubHeading.textContent = 'Processing was stopped safely.';
   });
@@ -789,3 +803,15 @@ modalDoneBtn.addEventListener('click', () => summaryModal.classList.add('hidden'
 
 // Initialize on popup load
 init();
+
+// Open external links reliably in a new Chrome tab
+document.querySelectorAll('a[href^="http"]').forEach(link => {
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) {
+      chrome.tabs.create({ url: link.href });
+    } else {
+      window.open(link.href, '_blank');
+    }
+  });
+});

@@ -1,6 +1,8 @@
-# PESU Academy Course Materials Downloader & Organizer
+# PesUGuide - Academic Course Materials Organizer
 
-A powerful Google Chrome browser extension and tool designed for **PESU Academy** (`https://www.pesuacademy.com`) to automate discovering, downloading, organizing, converting (PPT/PPTX to PDF), and merging all course materials available under the **Slides** option.
+> ⚡ **A vibe coded app** built for PESU Academy students.
+
+A vibe coded Google Chrome browser extension designed for **PESU Academy** (`https://www.pesuacademy.com`) to effortlessly automate discovering, downloading, organizing, converting (PPT/PPTX to PDF), and merging all course materials available under the **Slides** option. Pure vibes, zero friction, maximum productivity.
 
 ---
 
@@ -61,9 +63,9 @@ A powerful Google Chrome browser extension and tool designed for **PESU Academy*
    ```
    /Users/prajwalm/Desktop/pesi
    ```
-6. The extension **PESU Academy Course Downloader & Organizer** is now installed and active!
+6. The extension **PesUGuide** is now installed and active!
 
-*(Tip: Click the Puzzle icon in Chrome's toolbar and pin the PESU Downloader icon for quick access.)*
+*(Tip: Click the Puzzle icon in Chrome's toolbar and pin the PesUGuide icon for quick access.)*
 
 ---
 
@@ -85,7 +87,7 @@ python3 local_converter.py
 
 1. Navigate to **[PESU Academy](https://www.pesuacademy.com/Academy/)** in Google Chrome.
 2. Sign in with your username, password, or OTP.
-3. Click the **PESU Downloader** extension icon in Chrome toolbar.
+3. Click the **PesUGuide** extension icon in Chrome toolbar.
 4. In the popup:
    - Verify the status badge says **Connected** (green).
    - Select your **Semester** (e.g. `Sem-5`).
@@ -107,15 +109,27 @@ pesi/
 ├── popup.html             # Sleek extension user interface
 ├── popup.css              # Dark mode styling & micro-animations
 ├── popup.js               # Popup event handler & UI coordination
-├── background.js          # Background service worker
-├── local_converter.py     # Local PowerPoint / LibreOffice conversion tool
+├── background.js          # Background service worker & download interceptor
+├── content.js             # Session bridge for PESU Academy DOM
+├── offscreen.html         # Offscreen document for async processing
+├── offscreen.js           # Offscreen processing worker
+├── local_converter.py     # Optional PowerPoint / LibreOffice companion
 ├── lib/
 │   ├── pdf-lib.min.js     # Client-side PDF manipulation & merging
 │   └── jszip.min.js       # Client-side PPTX decompression
 └── src/
     ├── config.js          # PESU Academy selectors & API endpoints
+    ├── idb-helper.js      # IndexedDB cache helper
     ├── pesu-scraper.js    # API discovery for courses, units, and slides
     ├── pptx-converter.js  # Dual-mode PPTX -> PDF converter
     ├── pdf-merger.js      # Unit-wise PDF merger
     └── orchestrator.js    # Download queue & execution manager
 ```
+
+---
+
+<p align="center">
+  A vibe coded app • made by <a href="https://github.com/PixelAlgorithm"><strong>PixelAlgorithm</strong></a>
+</p>
+
+
