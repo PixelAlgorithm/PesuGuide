@@ -5,6 +5,7 @@
  * 2. In-browser Client-side PPTX -> PDF Parser using JSZip + pdf-lib + HTML Canvas
  */
 import { CONFIG } from './config.js';
+import { convertPptxOffscreen } from './offscreen-client.js';
 
 export class PptxConverter {
   /**
@@ -93,8 +94,15 @@ export class PptxConverter {
       }
     }
 
-    // Built-in JavaScript PPTX converter
+    // Built-in JavaScript PPTX converter. It needs DOMParser, which the
+    // background service worker does not have, so hand it to the offscreen page.
     if (format === 'pptx') {
+      if (typeof DOMParser === 'undefined' && typeof chrome !== 'undefined' && chrome.offscreen) {
+        return await convertPptxOffscreen(bytes, filename);
+      }
+      if (typeof DOMParser === 'undefined') {
+        throw new Error('No XML parser available for PPTX conversion');
+      }
       return await this.convertPptxInBrowser(bytes, filename, onProgress);
     }
 
@@ -109,15 +117,17 @@ export class PptxConverter {
    * Client-side PPTX -> PDF converter using JSZip and pdf-lib
    */
   static async convertPptxInBrowser(bytes, filename, onProgress = null) {
-    if (!window.JSZip) {
+    // Works in popup (window), service worker (self) and tests (globalThis)
+    const G = globalThis;
+    if (!G.JSZip) {
       throw new Error('JSZip library is required for client-side PPTX conversion.');
     }
-    if (!window.PDFLib) {
+    if (!G.PDFLib) {
       throw new Error('PDFLib library is required for generating PDF.');
     }
 
-    const { PDFDocument, rgb, StandardFonts } = window.PDFLib;
-    const zip = await window.JSZip.loadAsync(bytes);
+    const { PDFDocument, rgb, StandardFonts } = G.PDFLib;
+    const zip = await G.JSZip.loadAsync(bytes);
 
     // Discover slides in presentation.xml
     let slideCount = 0;
