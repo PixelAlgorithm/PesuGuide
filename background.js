@@ -5,6 +5,7 @@
  */
 import './lib/jszip.min.js';
 import './lib/pdf-lib.min.js';
+import { checkForUpdate, runScheduledCheck, scheduleUpdateChecks, applyBadge, dismissUpdate, getUpdateInfo } from './src/updater.js';
 import { CourseOrchestrator, formatSubjectSlug, pendingFilenameMap, pendingFilenameQueue, registerDownloadFilename } from './src/orchestrator.js';
 
 let activeOrchestrator = null;
@@ -44,7 +45,26 @@ function broadcastProgress(data) {
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log('PESU Academy Course Downloader background service worker initialized.');
+  scheduleUpdateChecks().then(() => runScheduledCheck()).catch(() => {});
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  scheduleUpdateChecks().then(() => runScheduledCheck()).catch(() => {});
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'pesu_update_check') runScheduledCheck().catch(() => {});
+});
+
+chrome.notifications.onClicked.addListener(async (id) => {
+  if (id !== 'pesu_update') return;
+  const { info } = await getUpdateInfo();
+  chrome.tabs.create({ url: info?.htmlUrl || 'https://github.com/PixelAlgorithm/PesuGuide/releases/latest' });
+  chrome.notifications.clear(id);
+});
+
+// Keep the badge correct whenever the worker wakes up
+applyBadge();
 
 let pendingDownloadName = null;
 
@@ -79,6 +99,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       pendingDownloadName = request.filename;
     }
     sendResponse({ success: true });
+    return true;
+  }
+
+  if (request.action === 'CHECK_UPDATE') {
+    checkForUpdate({ force: !!request.force })
+      .then(async (r) => { await applyBadge(); sendResponse(r); })
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  if (request.action === 'DISMISS_UPDATE') {
+    dismissUpdate(request.version).then(() => applyBadge()).then(() => sendResponse({ success: true }));
     return true;
   }
 
@@ -179,6 +211,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'CANCEL_DOWNLOAD') {
     if (activeOrchestrator) {
       activeOrchestrator.cancel();
+      activeOrchestrator.scraper.release().catch(() => {});
       addLog('Download safely cancelled by user.', 'warn');
       chrome.storage.local.set({
         pesu_download_state: {
@@ -228,6 +261,7 @@ async function runCourseTasksDownload(courseTasks, options = {}, queueTitle = ''
     filesFound: 0,
     filesDownloaded: 0,
     pptxConverted: 0,
+    keptOriginal: 0,
     pdfsMerged: 0,
     failed: 0,
     failedList: [],
@@ -341,6 +375,7 @@ async function runCourseTasksDownload(courseTasks, options = {}, queueTitle = ''
         aggregatedSummary.filesFound += summary.filesFound || 0;
         aggregatedSummary.filesDownloaded += summary.filesDownloaded || 0;
         aggregatedSummary.pptxConverted += summary.pptxConverted || 0;
+        aggregatedSummary.keptOriginal += summary.keptOriginal || 0;
         aggregatedSummary.pdfsMerged += summary.pdfsMerged || 0;
         aggregatedSummary.failed += summary.failed || 0;
         if (summary.failedList && summary.failedList.length > 0) {
@@ -350,7 +385,7 @@ async function runCourseTasksDownload(courseTasks, options = {}, queueTitle = ''
           })));
         }
         if (summary.emptyUnits && summary.emptyUnits.length > 0) {
-          aggregatedSummary.emptyUnits.push(...summary.emptyUnits.map(u => `[${sub.code}] Unit ${u}`));
+          aggregatedSummary.emptyUnits.push(...summary.emptyUnits.map(u => `[${sub.code}] ${/unit/i.test(String(u)) ? u : 'Unit ' + u}`));
         }
         addLog(`✅ Completed [${tIdx + 1}/${courseTasks.length}] ${sub.code} (${summary.filesDownloaded} files downloaded, ${summary.pdfsMerged} merged PDFs)`, 'info');
       } else {
@@ -404,6 +439,9 @@ async function runCourseTasksDownload(courseTasks, options = {}, queueTitle = ''
   if (!activeOrchestrator.isCancelled && isFromQueue) {
     await chrome.storage.local.remove('pesu_download_queue');
   }
+
+  // Let the PESU tab be discarded again and close any helper tab we opened
+  await activeOrchestrator.scraper.release().catch(() => {});
 
   const finalStatus = activeOrchestrator.isCancelled ? 'cancelled' : 'completed';
   const completedState = {

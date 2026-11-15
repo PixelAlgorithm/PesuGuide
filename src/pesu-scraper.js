@@ -5,9 +5,36 @@
  */
 import { CONFIG } from './config.js';
 
+const PESU_TAB_PATTERN = '*://www.pesuacademy.com/*';
+const PESU_HOME = 'https://www.pesuacademy.com/Academy/s/studentProfilePESU';
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })
+  ]).finally(() => clearTimeout(timer));
+}
+
 export class PesuScraper {
-  constructor() {
+  /**
+   * @param {{ keepAlive?: boolean }} opts
+   *   keepAlive: used by the background downloader. The scraper sticks to one
+   *   PESU tab for the whole run, stops the browser from discarding it, and if
+   *   the user navigates that tab elsewhere (or closes it) it reopens PESU
+   *   Academy in a background tab instead of failing.
+   */
+  constructor(opts = {}) {
     this.csrfToken = null;
+    this.keepAlive = !!opts.keepAlive;
+    this.tabId = null;          // tab we are currently driving
+    this.helperTabId = null;    // tab we opened ourselves (closed on release)
+    this.pinnedTabs = new Set();
+    this.badTabs = new Set();   // tabs that just hung/failed; avoid for this call
+  }
+
+  isPesuUrl(url) {
+    return typeof url === 'string' && /^https?:\/\/www\.pesuacademy\.com\//i.test(url);
   }
 
   /**
@@ -15,12 +42,24 @@ export class PesuScraper {
    */
   async getPesuTab() {
     try {
-      const tabs = await chrome.tabs.query({ url: '*://www.pesuacademy.com/*' });
-      if (tabs && tabs.length > 0) {
-        // Return active tab if it matches, or studentProfile tab, or first tab
-        const activeTab = tabs.find(t => t.active && t.url.includes('pesuacademy.com'));
-        const profileTab = tabs.find(t => t.url.includes('/s/studentProfile'));
-        return activeTab || profileTab || tabs[0];
+      // Prefer the tab we were already using, as long as it is still on PESU
+      if (this.tabId != null) {
+        const t = await chrome.tabs.get(this.tabId).catch(() => null);
+        if (t && this.isPesuUrl(t.url) && !t.discarded && !t.frozen && !this.badTabs.has(t.id)) return t;
+        this.tabId = null;
+      }
+      const tabs = await chrome.tabs.query({ url: PESU_TAB_PATTERN });
+      const usable = (tabs || []).filter(t => !t.discarded && !t.frozen && !this.badTabs.has(t.id));
+      if (usable.length > 0) {
+        const activeTab = usable.find(t => t.active);
+        const profileTab = usable.find(t => t.url.includes('/s/studentProfile'));
+        return activeTab || profileTab || usable[0];
+      }
+      // A discarded PESU tab can be woken up rather than opening a new one
+      const discarded = (tabs || []).find(t => t.discarded);
+      if (discarded && this.keepAlive) {
+        await chrome.tabs.reload(discarded.id);
+        return await this.waitForTabReady(discarded.id);
       }
     } catch (e) {
       console.warn('Could not query tabs:', e);
@@ -28,46 +67,170 @@ export class PesuScraper {
     return null;
   }
 
-  /**
-   * Execute function in the MAIN world of the active PESU Academy tab
-   */
-  async executeInMainWorld(func, args = []) {
-    const tab = await this.getPesuTab();
-    if (!tab) {
-      throw new Error('No PESU Academy tab found. Please open PESU Academy in Chrome.');
+  /** Wait until a tab has finished loading and PESU's jQuery is available. */
+  async waitForTabReady(tabId, timeoutMs = 25000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t) return null;
+      if (t.status === 'complete' && this.isPesuUrl(t.url)) {
+        try {
+          const [probe] = await withTimeout(chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => !!(window.$ && window.$.ajax)
+          }), 4000, 'probe timeout');
+          if (probe && probe.result === true) return t;
+        } catch {}
+      }
+      await sleep(400);
     }
+    return null;
+  }
 
-    if (typeof chrome.scripting !== 'undefined' && chrome.scripting.executeScript) {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        world: 'MAIN',
-        func,
-        args
-      });
+  /**
+   * Get a PESU tab to run in. In keepAlive mode, open one in the background
+   * when none is left (your login cookie is shared, so it is signed in).
+   */
+  async acquireTab() {
+    let tab = await this.getPesuTab();
+    if (!tab && this.keepAlive) {
+      if (this.helperTabId != null) {
+        tab = await this.waitForTabReady(this.helperTabId, 5000);
+        if (!tab) this.helperTabId = null;
+      }
+      if (!tab) {
+        const created = await chrome.tabs.create({ url: PESU_HOME, active: false });
+        this.helperTabId = created.id;
+        tab = await this.waitForTabReady(created.id);
+      }
+    }
+    if (!tab) return null;
+    this.tabId = tab.id;
+    if (this.keepAlive && !this.pinnedTabs.has(tab.id)) {
+      this.pinnedTabs.add(tab.id);
+      // Stop Brave/Chrome memory saver from unloading the tab mid-download
+      chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+    }
+    return tab;
+  }
 
-      if (!results || results.length === 0) {
-        throw new Error('Script execution in PESU Academy tab failed.');
+  /** Undo autoDiscardable changes and close any tab we opened. */
+  async release() {
+    for (const id of this.pinnedTabs) {
+      chrome.tabs.update(id, { autoDiscardable: true }).catch(() => {});
+    }
+    this.pinnedTabs.clear();
+    this.badTabs.clear();
+    if (this.helperTabId != null) {
+      chrome.tabs.remove(this.helperTabId).catch(() => {});
+      this.helperTabId = null;
+    }
+    this.tabId = null;
+  }
+
+  /**
+   * Execute function in the MAIN world of a PESU Academy tab.
+   * Every PESU call returns a value (array/object), so an empty result means
+   * the page went away while we were waiting. That is retried on a fresh tab
+   * instead of being mistaken for "no slides uploaded".
+   */
+  async executeInMainWorld(func, args = [], opts = {}) {
+    const timeoutMs = opts.timeoutMs || 30000;
+    const attempts = this.keepAlive ? 4 : 1;
+    let lastErr = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const tab = await this.acquireTab();
+      if (!tab) {
+        lastErr = new Error('No PESU Academy tab found. Open PESU Academy and sign in.');
+        if (!this.keepAlive) throw lastErr;
+        await sleep(1000);
+        continue;
       }
 
-      const result = results[0].result;
+      let results;
+      try {
+        results = await withTimeout(chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          func,
+          args
+        }), timeoutMs, `PESU Academy tab did not answer in ${Math.round(timeoutMs / 1000)}s (frozen in background?)`);
+      } catch (err) {
+        // Tab navigated, closed, froze or crashed during the call
+        lastErr = err;
+        this.badTabs.add(tab.id);
+        this.tabId = null;
+        await sleep(700 * attempt);
+        continue;
+      }
+
+      const result = results && results[0] ? results[0].result : undefined;
+      if (result === undefined || result === null) {
+        lastErr = new Error('PESU Academy tab stopped responding (did it navigate away?)');
+        this.tabId = null;
+        await sleep(700 * attempt);
+        continue;
+      }
       if (result && result.error) {
+        if (result.retry && attempt < attempts) {
+          lastErr = new Error(result.error);
+          await sleep(1000 * attempt);
+          continue;
+        }
         throw new Error(result.error);
       }
+      this.badTabs.delete(tab.id);
       return result;
     }
+    throw lastErr || new Error('Script execution in PESU Academy tab failed.');
+  }
 
-    // Context fallback (e.g. from offscreen worker)
-    const response = await chrome.runtime.sendMessage({
-      action: 'EXECUTE_PESU_SCRIPT',
-      tabId: tab.id,
-      funcStr: func.toString(),
-      args
-    });
+  /**
+   * Download a PESU Academy URL from inside the signed-in PESU tab, exactly
+   * like a click would (same-origin cookies, Referer, CSRF header). PESU's
+   * download endpoints answer 500 / empty bodies to requests that don't look
+   * like they came from the page, so this is the reliable path for them.
+   * @returns {{bytes: Uint8Array, finalUrl: string, contentDisposition: string}}
+   */
+  async fetchInPage(url) {
+    const res = await this.executeInMainWorld(async (u) => {
+      const csrf = document.querySelector('meta[name="csrf-token"]')?.content ||
+                   (window.$ && window.$.ajaxSettings?.headers ? window.$.ajaxSettings.headers['X-CSRF-Token'] : '') || '';
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      let last = 'no response';
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 60000);
+          const r = await fetch(u, {
+            credentials: 'include',
+            headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+            signal: ctrl.signal
+          });
+          const buf = new Uint8Array(await r.arrayBuffer());
+          clearTimeout(timer);
+          if (r.ok && buf.byteLength > 0) {
+            let bin = '';
+            for (let i = 0; i < buf.length; i += 0x8000) {
+              bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+            }
+            return { ok: true, b64: btoa(bin), finalUrl: r.url, cd: r.headers.get('content-disposition') || '' };
+          }
+          last = r.ok ? 'Server returned an empty file' : `HTTP ${r.status}`;
+        } catch (e) {
+          last = e.name === 'AbortError' ? 'Timed out after 60s' : e.message;
+        }
+        await wait(1200 * attempt);
+      }
+      return { error: `${last} (from PESU tab)` };
+    }, [url], { timeoutMs: 200000 });
 
-    if (response && response.error) {
-      throw new Error(response.error);
-    }
-    return response ? response.result : null;
+    const bin = atob(res.b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { bytes, finalUrl: res.finalUrl || url, contentDisposition: res.cd || '' };
   }
 
   /**
@@ -136,6 +299,7 @@ export class PesuScraper {
         window.$.ajax({
           url: 'https://www.pesuacademy.com/Academy/s/studentProfile/getStudentSemestersPESU',
           type: 'GET',
+          timeout: 20000,
           headers: {
             'X-CSRF-Token': csrf,
             'X-Requested-With': 'XMLHttpRequest'
@@ -185,6 +349,7 @@ export class PesuScraper {
         window.$.ajax({
           url: 'https://www.pesuacademy.com/Academy/s/studentProfilePESUAdmin',
           type: 'POST',
+          timeout: 20000,
           data: {
             controllerMode: 6403,
             actionType: 38,
@@ -243,6 +408,7 @@ export class PesuScraper {
         window.$.ajax({
           url: 'https://www.pesuacademy.com/Academy/s/studentProfilePESUAdmin',
           type: 'GET',
+          timeout: 20000,
           data: {
             controllerMode: 6403,
             actionType: 42,
@@ -281,7 +447,7 @@ export class PesuScraper {
             resolve(units);
           },
           error: (xhr, status, err) => {
-            resolve({ error: `Failed to load units: ${err || status}` });
+            resolve({ error: `Failed to load units (HTTP ${xhr.status}): ${err || status}`, retry: true });
           }
         });
       });
@@ -291,8 +457,8 @@ export class PesuScraper {
   /**
    * Get all classes for a specific unit
    */
-  async getUnitClasses(unitContentId, subjectId) {
-    return await this.executeInMainWorld((uContentId, subId) => {
+  async getUnitClasses(unitContentId, subjectId, contentType = 2) {
+    return await this.executeInMainWorld((uContentId, subId, ctype) => {
       return new Promise((resolve) => {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.content ||
                      (window.$ && $.ajaxSettings?.headers ? $.ajaxSettings.headers['X-CSRF-Token'] : '');
@@ -300,6 +466,7 @@ export class PesuScraper {
         window.$.ajax({
           url: 'https://www.pesuacademy.com/Academy/s/studentProfilePESUAdmin',
           type: 'GET',
+          timeout: 20000,
           data: {
             controllerMode: 6403,
             actionType: 43,
@@ -365,10 +532,11 @@ export class PesuScraper {
                 .filter(el => el.getAttribute && el.getAttribute('onclick'));
 
               let matched = null;
-              // 1. Prefer type 2 (Slides)
+              // 1. Prefer the requested content type (2 = Slides, 3 = Notes)
+              const typedRe = new RegExp("handleclasscoursecontentunit\\s*\\(\\s*['\"]?([^'\",]+)['\"]?\\s*,\\s*['\"]?([^'\",]+)['\"]?\\s*,\\s*['\"]?([^'\",]+)['\"]?\\s*,\\s*['\"]?([^'\",]+)['\"]?\\s*,\\s*['\"]?" + ctype + "\\b", 'i');
               for (const el of clickables) {
                 const oc = el.getAttribute('onclick') || '';
-                const m = oc.match(/handleclasscoursecontentunit\s*\(\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?([^'",]+)['"]?\s*,\s*['"]?2\b/i);
+                const m = oc.match(typedRe);
                 if (m) {
                   matched = m;
                   break;
@@ -431,18 +599,18 @@ export class PesuScraper {
             resolve(classes);
           },
           error: (xhr, status, err) => {
-            resolve([]);
+            resolve({ error: `Failed to load classes (HTTP ${xhr.status}): ${err || status}`, retry: true });
           }
         });
       });
-    }, [unitContentId, subjectId]);
+    }, [unitContentId, subjectId, contentType]);
   }
 
   /**
    * Get all slide files for a specific class
    */
-  async getClassSlideFiles(classInfo) {
-    return await this.executeInMainWorld((cls) => {
+  async getClassSlideFiles(classInfo, contentType = 2) {
+    return await this.executeInMainWorld((cls, ctype) => {
       return new Promise((resolve) => {
         const csrf = document.querySelector('meta[name="csrf-token"]')?.content ||
                      (window.$ && $.ajaxSettings?.headers ? $.ajaxSettings.headers['X-CSRF-Token'] : '');
@@ -450,11 +618,12 @@ export class PesuScraper {
         window.$.ajax({
           url: 'https://www.pesuacademy.com/Academy/s/studentProfilePESUAdmin',
           type: 'GET',
+          timeout: 20000,
           data: {
             controllerMode: 6403,
             actionType: 60,
             selectedData: cls.subjectid,
-            id: 2,
+            id: ctype,
             unitid: cls.courseunitid,
             coursecontentid: cls.coursecontentid,
             classno: cls.classNo,
@@ -513,12 +682,46 @@ export class PesuScraper {
                 docId = iframeMatch[2];
               }
 
-              // Case B: downloadcoursedoc(id) / downloadcoursedocforstudent(id)
+              // Case B: downloadcoursedoc('<uuid>') / downloadslidecoursedoc(123) / ...
+              // These are the "link" rows: clicking them opens a file download.
+              // PESU's handler is e.g.
+              //   downloadcoursedoc(e){ window.open("referenceMeterials/downloadcoursedoc/"+e) }
+              // (a path relative to the current page), so the safest way to get
+              // the real URL is to run that handler with window.open captured.
               if (!path) {
-                const docMatch = onclick.match(/downloadcoursedoc(?:forstudent)?\s*\(\s*['"]?(\d+)['"]?\s*\)/i);
+                const docMatch = onclick.match(/(download\w*)\s*\(\s*['"]?([\w-]+)['"]?/i);
                 if (docMatch) {
-                  docId = docMatch[1];
-                  path = `/Academy/s/studentProfilePESUAdmin/downloadcoursedoc/${docId}`;
+                  const fnName = docMatch[1];
+                  docId = docMatch[2];
+                  const fn = window[fnName];
+                  const fnSrc = typeof fn === 'function' ? String(fn) : '';
+                  if (fnSrc && /window\.open\s*\(/.test(fnSrc) && !/location\s*(\.href)?\s*=|location\.(assign|replace)/.test(fnSrc)) {
+                    const realOpen = window.open;
+                    let captured = null;
+                    try {
+                      window.open = (u) => { captured = u; return null; };
+                      fn.call(window, docId);
+                    } catch (e) {
+                    } finally {
+                      window.open = realOpen;
+                    }
+                    if (captured) path = new URL(String(captured), window.location.href).toString();
+                  }
+                  if (!path && fnSrc) {
+                    // Rebuild from the string literal in the handler: "<prefix>" + id
+                    const um = fnSrc.match(/["']([^"']*download[^"']*\/)["']\s*\+\s*\w+\s*,?/i) ||
+                               fnSrc.match(/["']([\w\/.-]*)["'][^;]*?\+\s*["'](\/download\w*\/)["']/i);
+                    if (um) {
+                      const prefix = um[2] ? um[1] + um[2] : um[1];
+                      path = new URL(prefix + docId, window.location.href).toString();
+                    }
+                  }
+                  if (!path) {
+                    // Known PESU layout: handlers open "referenceMeterials/<fn>/<id>"
+                    // relative to /Academy/s/
+                    const endpoint = /slide/i.test(fnName) ? 'downloadslidecoursedoc' : 'downloadcoursedoc';
+                    path = `https://www.pesuacademy.com/Academy/s/referenceMeterials/${endpoint}/${docId}`;
+                  }
                 }
               }
 
@@ -611,7 +814,7 @@ export class PesuScraper {
             const unescapedHtml = cleanHtml.replace(/\\\//g, '/');
             const s3Matches = Array.from(unescapedHtml.matchAll(/https?:\/\/files\.pesuacademy\.com\/elearning\/[^\s'"<>]+\.(?:pptx?|pdf|ppt)[^\s'"<>]*/gi));
             for (const sm of s3Matches) {
-              const cleanS3Url = sm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '');
+              const cleanS3Url = sm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '').split('#')[0];
               if (!seenUrls.has(cleanS3Url)) {
                 seenUrls.add(cleanS3Url);
                 linkIndex++;
@@ -628,7 +831,7 @@ export class PesuScraper {
             // Global Raw Regex for any generic presentations or documents
             const anyDocMatches = Array.from(unescapedHtml.matchAll(/https?:\/\/[a-zA-Z0-9_.-]+\.(?:s3[a-zA-Z0-9_.-]*\.amazonaws\.com|cloudfront\.net|pesuacademy\.com)\/[^\s'"<>]+\.(?:pptx?|pdf|ppt)[^\s'"<>]*/gi));
             for (const dm of anyDocMatches) {
-              const cleanDocUrl = dm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '');
+              const cleanDocUrl = dm[0].replace(/&amp;/g, '&').replace(/['"]+$/, '').split('#')[0];
               if (!seenUrls.has(cleanDocUrl)) {
                 seenUrls.add(cleanDocUrl);
                 linkIndex++;
@@ -645,17 +848,17 @@ export class PesuScraper {
             resolve(files);
           },
           error: (xhr, status, err) => {
-            resolve({ error: `Failed to load slide links: ${err || status}` });
+            resolve({ error: `Failed to load file links (HTTP ${xhr.status}): ${err || status}`, retry: true });
           }
         });
       });
-    }, [classInfo]);
+    }, [classInfo, contentType]);
   }
 
   /**
    * Discovers the entire hierarchy of slides for a subject
    */
-  async scanSubjectSlides(subjectId, selectedUnitNumbers = null, onProgress = null) {
+  async scanSubjectSlides(subjectId, selectedUnitNumbers = null, onProgress = null, contentType = 2) {
     const units = await this.getUnits(subjectId);
     if (!Array.isArray(units)) {
       if (units && units.error) {
@@ -681,13 +884,13 @@ export class PesuScraper {
         });
       }
 
-      const classes = await this.getUnitClasses(unit.unitContentId, subjectId);
+      const classes = await this.getUnitClasses(unit.unitContentId, subjectId, contentType);
       const unitFiles = [];
       const seenDocIds = new Set();
 
       if (Array.isArray(classes) && classes.length > 0) {
         for (const cls of classes) {
-          const files = await this.getClassSlideFiles(cls);
+          const files = await this.getClassSlideFiles(cls, contentType);
           if (Array.isArray(files)) {
             for (const f of files) {
               if (!seenDocIds.has(f.docId)) {

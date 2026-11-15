@@ -47,7 +47,16 @@ A vibe coded Google Chrome browser extension designed for **PESU Academy** (`htt
      ```
    - All merged PDFs preserve the exact visual ordering as presented on PESU Academy.
 
-5. **Multi-Course Queue & Packaging Modes**:
+5. **Notes + Slides, Including Link Items**:
+   - Tick **Notes** next to **Slides** to download both in one run (`notes/unit_x/` inside the ZIP).
+   - "Link" rows on PESU Academy (the chain-link items that download a PDF/PPT when clicked) are followed automatically: download endpoints, redirects, viewer/iframe wrapper pages and Google Drive links are resolved to the real file.
+   - File type is detected from the file itself. PDFs stay PDFs, PPT/PPTX become PDFs, and anything else (DOCX, TXT, images) is kept in its original format. If a presentation can't be converted, the original is saved instead of failing.
+
+6. **Automatic Update Checks**:
+   - The extension checks GitHub Releases every 6 hours in the background, shows a **NEW** badge on the toolbar icon, and sends one notification per release.
+   - The popup footer shows the last check and a **Check now** button; the banner downloads the release ZIP for you.
+
+7. **Multi-Course Queue & Packaging Modes**:
    - Queue multiple subjects or process an entire semester in one go.
    - Choose between **Single Organized ZIP** (1-click download), **Merged Unit PDFs Only**, or **Direct Slide Folders**.
    - Remembers previously downloaded files to avoid redundant downloads.

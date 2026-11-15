@@ -11,7 +11,8 @@ export const CONFIG = {
     SEMESTERS: '/Academy/s/studentProfile/getStudentSemestersPESU',
     ADMIN_AJAX: '/Academy/s/studentProfilePESUAdmin',
     STUDENT_PROFILE: '/Academy/s/studentProfilePESU',
-    DOWNLOAD_SLIDE_BASE: '/Academy/a/referenceMeterials/downloadslidecoursedoc/'
+    DOWNLOAD_SLIDE_BASE: '/Academy/s/referenceMeterials/downloadslidecoursedoc/',
+    DOWNLOAD_DOC_BASE: '/Academy/s/referenceMeterials/downloadcoursedoc/'
   },
 
   // Controller and Action parameters

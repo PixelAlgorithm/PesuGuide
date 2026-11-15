@@ -4,6 +4,9 @@
  */
 import { PesuScraper } from './src/pesu-scraper.js';
 import { PptxConverter } from './src/pptx-converter.js';
+import { checkForUpdate, getUpdateInfo, dismissUpdate, currentVersion, applyBadge } from './src/updater.js';
+
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // DOM Elements
 const connectionBadge = document.getElementById('connectionBadge');
@@ -35,6 +38,8 @@ const downloadModeSelect = document.getElementById('downloadModeSelect');
 const mergeUnitPdfsCheck = document.getElementById('mergeUnitPdfsCheck');
 const mergeAllUnitsCheck = document.getElementById('mergeAllUnitsCheck');
 const saveIndividualCheck = document.getElementById('saveIndividualCheck');
+const includeSlidesCheck = document.getElementById('includeSlidesCheck');
+const includeNotesCheck = document.getElementById('includeNotesCheck');
 
 const progressSection = document.getElementById('progressSection');
 const progressSpinner = document.getElementById('progressSpinner');
@@ -61,6 +66,7 @@ const statDownloaded = document.getElementById('statDownloaded');
 const statConverted = document.getElementById('statConverted');
 const statMerged = document.getElementById('statMerged');
 const statFailed = document.getElementById('statFailed');
+const statKept = document.getElementById('statKept');
 const failedFilesSection = document.getElementById('failedFilesSection');
 const failedList = document.getElementById('failedList');
 
@@ -76,15 +82,15 @@ function addLog(message, type = 'info') {
   const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const row = document.createElement('div');
   row.className = 'log-entry';
-  row.innerHTML = `<span class="log-time">[${time}]</span> <span class="log-msg-${type}">${message}</span>`;
+  row.innerHTML = `<span class="log-time">${time}</span> <span class="log-msg-${esc(type)}">${esc(message)}</span>`;
   logContent.appendChild(row);
   logContent.scrollTop = logContent.scrollHeight;
 }
 
 // Modern Vector SVG Icons
 const SVG_ICONS = {
-  download: '<svg class="btn-svg-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
-  stop: '<svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',
+  download: '<svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5M12 15V3"/></svg>',
+  stop: '<svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect width="14" height="14" x="5" y="5" rx="2"/></svg>',
   trash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>',
   check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
 };
@@ -93,10 +99,10 @@ const SVG_ICONS = {
 async function updateConverterStatus() {
   const status = await PptxConverter.checkLocalServer();
   if (status.available) {
-    converterBadge.textContent = status.engine || 'Local Converter';
+    converterBadge.textContent = status.engine || 'Local converter';
     converterBadge.title = 'Local PowerPoint/LibreOffice converter active (High fidelity)';
   } else {
-    converterBadge.textContent = 'Built-in JS Engine';
+    converterBadge.textContent = 'Built-in converter';
     converterBadge.title = 'Using in-browser client-side PPTX converter';
   }
 }
@@ -104,16 +110,16 @@ async function updateConverterStatus() {
 // Verify Login & Load Semesters
 async function init() {
   connectionBadge.className = 'badge badge-warning';
-  connectionBadge.innerHTML = '<span class="status-dot"></span> Checking session...';
+  connectionBadge.innerHTML = '<span class="status-dot"></span> Checking';
 
   updateConverterStatus();
 
   const status = await scraper.checkLoginStatus();
   if (!status.loggedIn) {
     connectionBadge.className = 'badge badge-danger';
-    connectionBadge.innerHTML = '<span class="status-dot"></span> Not Logged In';
+    connectionBadge.innerHTML = '<span class="status-dot"></span> Signed out';
     loginPromptCard.classList.remove('hidden');
-    semesterSelect.innerHTML = '<option value="">⚠️ Sign in to PESU Academy first</option>';
+    semesterSelect.innerHTML = '<option value="">Sign in to PESU Academy first</option>';
     semesterSelect.disabled = true;
     subjectSelect.innerHTML = '<option value="">Select a semester first</option>';
     subjectSelect.disabled = true;
@@ -142,13 +148,13 @@ async function init() {
   } catch (e) {}
 
   await loadSemesters();
-  checkForUpdates();
+  checkForUpdates(false);
 }
 
 // Load Semesters
 async function loadSemesters() {
   semesterSelect.disabled = true;
-  semesterSelect.innerHTML = '<option value="" disabled selected>Loading semesters...</option>';
+  semesterSelect.innerHTML = '<option value="" disabled selected>Loading…</option>';
   try {
     const semesters = await scraper.getSemesters();
     semesterSelect.innerHTML = '';
@@ -169,12 +175,12 @@ async function loadSemesters() {
     await loadSubjects(semesterSelect.value);
   } catch (err) {
     console.error('Failed to load semesters:', err);
-    semesterSelect.innerHTML = `<option value="">⚠️ ${err.message || 'Failed to load semesters'}</option>`;
+    semesterSelect.innerHTML = `<option value="">${esc(err.message || 'Failed to load semesters')}</option>`;
     semesterSelect.disabled = true;
     addLog(`Failed to load semesters: ${err.message}`, 'error');
     if (err.message && (err.message.includes('Session expired') || err.message.includes('Sign in'))) {
       connectionBadge.className = 'badge badge-danger';
-      connectionBadge.innerHTML = '<span class="status-dot"></span> Session Expired';
+      connectionBadge.innerHTML = '<span class="status-dot"></span> Session expired';
       loginPromptCard.classList.remove('hidden');
     }
   }
@@ -185,7 +191,7 @@ async function loadSubjects(semesterId) {
   if (!semesterId) return;
   subjectSelect.disabled = true;
   subjectSelect.innerHTML = '<option value="" disabled selected>Loading courses...</option>';
-  unitsContainer.innerHTML = '<div class="empty-hint">Loading unit details...</div>';
+  unitsContainer.innerHTML = '<div class="empty-hint">Loading units…</div>';
 
   try {
     currentSubjects = await scraper.getSubjects(semesterId);
@@ -208,12 +214,12 @@ async function loadSubjects(semesterId) {
     await loadUnits(subjectSelect.value);
   } catch (err) {
     console.error('Failed to load subjects:', err);
-    subjectSelect.innerHTML = `<option value="">⚠️ ${err.message || 'Failed to load courses'}</option>`;
-    unitsContainer.innerHTML = `<div class="empty-hint text-danger">${err.message}</div>`;
+    subjectSelect.innerHTML = `<option value="">${esc(err.message || 'Failed to load courses')}</option>`;
+    unitsContainer.innerHTML = `<div class="empty-hint text-danger">${esc(err.message)}</div>`;
     addLog(`Failed to load courses: ${err.message}`, 'error');
     if (err.message && err.message.toLowerCase().includes('session')) {
       connectionBadge.className = 'badge badge-danger';
-      connectionBadge.innerHTML = '<span class="status-dot"></span> Session Expired';
+      connectionBadge.innerHTML = '<span class="status-dot"></span> Session expired';
       loginPromptCard.classList.remove('hidden');
     }
   }
@@ -222,7 +228,7 @@ async function loadSubjects(semesterId) {
 // Load Units for selected subject
 async function loadUnits(subjectId) {
   if (!subjectId) return;
-  unitsContainer.innerHTML = '<div class="empty-hint">Loading unit details...</div>';
+  unitsContainer.innerHTML = '<div class="empty-hint">Loading units…</div>';
 
   try {
     const units = await scraper.getUnits(subjectId);
@@ -236,12 +242,16 @@ async function loadUnits(subjectId) {
     units.forEach(u => {
       const item = document.createElement('div');
       item.className = 'unit-item';
+      const title = String(u.rawName || '').replace(/^Unit\s*\d+\s*[:\-–]?\s*/i, '').trim();
       item.innerHTML = `
         <label>
-          <input type="checkbox" class="unit-checkbox" value="${u.unitNumber}" checked>
-          <span>${u.folderName}: ${u.rawName.replace(/^Unit\s*\d+\s*:\s*/i, '')}</span>
+          <input type="checkbox" class="unit-checkbox" value="${esc(u.unitNumber)}" checked>
+          <span class="check-box" aria-hidden="true"></span>
+          <span class="unit-label">
+            <span class="unit-no">Unit ${esc(u.unitNumber)}</span>
+            <span class="unit-name">${esc(title || u.folderName)}</span>
+          </span>
         </label>
-        <span class="unit-badge">${u.folderName}</span>
       `;
       const cb = item.querySelector('.unit-checkbox');
       if (cb) cb.addEventListener('change', updateStartButtonState);
@@ -250,7 +260,7 @@ async function loadUnits(subjectId) {
     updateStartButtonState();
   } catch (err) {
     console.error('Failed to load units:', err);
-    unitsContainer.innerHTML = `<div class="empty-hint">Failed to load units: ${err.message}</div>`;
+    unitsContainer.innerHTML = `<div class="empty-hint text-danger">Couldn't load units: ${esc(err.message)}</div>`;
     updateStartButtonState();
   }
 }
@@ -266,7 +276,7 @@ function updateStartButtonState() {
   if (!startBtn) return;
   const queueCount = downloadQueue.length;
   if (queueCount > 0) {
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download List (${queueCount} ${queueCount === 1 ? 'course' : 'courses'})</span>`;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download list · ${queueCount} ${queueCount === 1 ? 'course' : 'courses'}</span>`;
     if (selectedUnitsBadge) selectedUnitsBadge.classList.add('hidden');
     return;
   }
@@ -274,7 +284,7 @@ function updateStartButtonState() {
   const isAllSubjects = processAllSubjectsCheck && processAllSubjectsCheck.checked;
   if (isAllSubjects) {
     const totalCourses = currentSubjects ? currentSubjects.length : 0;
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download All Courses (${totalCourses})</span>`;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download ${materialLabel()} · ${totalCourses} courses</span>`;
     if (selectedUnitsBadge) selectedUnitsBadge.classList.add('hidden');
     return;
   }
@@ -285,7 +295,7 @@ function updateStartButtonState() {
 
   if (selectedUnitsBadge) {
     if (totalUnits > 0) {
-      selectedUnitsBadge.textContent = `${selectedUnits.length} of ${totalUnits} selected`;
+      selectedUnitsBadge.textContent = `${selectedUnits.length}/${totalUnits}`;
       selectedUnitsBadge.classList.remove('hidden');
     } else {
       selectedUnitsBadge.classList.add('hidden');
@@ -293,14 +303,22 @@ function updateStartButtonState() {
   }
 
   if (totalUnits === 0) {
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Start Download</span>`;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Start download</span>`;
   } else if (selectedUnits.length === 0) {
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Select at least 1 unit</span>`;
-  } else if (selectedUnits.length === totalUnits) {
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download All Units (${totalUnits})</span>`;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Select a unit</span>`;
   } else {
-    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download Selected (Unit ${selectedUnits.join(', ')})</span>`;
+    const what = materialLabel();
+    const count = selectedUnits.length === totalUnits ? 'all units' : `${selectedUnits.length} unit${selectedUnits.length === 1 ? '' : 's'}`;
+    startBtn.innerHTML = `${SVG_ICONS.download}<span>Download ${what} · ${count}</span>`;
   }
+}
+
+function materialLabel() {
+  const slides = !includeSlidesCheck || includeSlidesCheck.checked;
+  const notes = includeNotesCheck && includeNotesCheck.checked;
+  if (slides && notes) return 'slides + notes';
+  if (notes) return 'notes';
+  return 'slides';
 }
 
 // Load persistent queue from storage
@@ -349,10 +367,10 @@ function renderQueue() {
     row.innerHTML = `
       <div class="queue-item-info">
         <div class="queue-item-header">
-          <span class="queue-sem-tag">${item.semesterName || 'Sem'}</span>
-          <span class="queue-item-title" title="${item.title}">${item.title}</span>
+          <span class="queue-sem-tag">${esc(item.semesterName || 'Sem')}</span>
+          <span class="queue-item-title" title="${esc(item.title)}">${esc(item.title)}</span>
         </div>
-        <div class="queue-item-detail">${item.unitSummary}</div>
+        <div class="queue-item-detail">${esc(item.unitSummary)}</div>
       </div>
       <button type="button" class="queue-remove-btn" data-index="${index}" title="Remove from list">
         ${SVG_ICONS.trash}
@@ -373,7 +391,7 @@ function renderQueue() {
 // Show visual feedback pill
 function showQueueFeedback(text = 'Added to list') {
   if (!queueAddFeedback) return;
-  queueAddFeedback.innerHTML = `${SVG_ICONS.check}<span>${text}</span>`;
+  queueAddFeedback.innerHTML = `${SVG_ICONS.check}<span>${esc(text)}</span>`;
   queueAddFeedback.classList.remove('hidden');
   clearTimeout(feedbackTimer);
   feedbackTimer = setTimeout(() => {
@@ -583,15 +601,16 @@ function handleProgressUpdate(event) {
   cancelBtn.classList.remove('hidden');
 
   if (event.status === 'started' || event.status === 'scanning') {
-    progressHeading.textContent = 'Discovering Materials...';
+    progressHeading.textContent = 'Finding files…';
     progressSubHeading.textContent = event.message || 'Scanning units and classes...';
   } else if (event.status === 'downloading') {
-    progressHeading.textContent = 'Downloading Slides (Parallel)';
+    progressHeading.textContent = 'Downloading';
     progressSubHeading.textContent = `${event.unitName || ''} (${event.unitProgress || ''})`;
     currentUnitVal.textContent = event.unitName || '—';
     currentFileVal.textContent = event.currentFile || '—';
     progressPercent.textContent = `${event.percent || 0}%`;
     overallProgressBar.style.width = `${event.percent || 0}%`;
+    overallProgressBar.parentElement.setAttribute('aria-valuenow', String(event.percent || 0));
   } else if (event.status === 'converting') {
     currentFileVal.textContent = event.currentFile || 'Converting...';
   } else if (event.status === 'merging') {
@@ -604,15 +623,17 @@ function handleProgressUpdate(event) {
     currentFileVal.textContent = event.currentFile || 'Course completed';
     progressPercent.textContent = `${event.percent || 0}%`;
     overallProgressBar.style.width = `${event.percent || 0}%`;
+    overallProgressBar.parentElement.setAttribute('aria-valuenow', String(event.percent || 0));
   } else if (event.status === 'completed') {
     progressSpinner.classList.add('hidden');
     startBtn.classList.remove('hidden');
     cancelBtn.classList.add('hidden');
     openFolderBtn.classList.remove('hidden');
-    progressHeading.textContent = 'Completed!';
-    progressSubHeading.textContent = 'All requested materials have been organized.';
+    progressHeading.textContent = 'Finished';
+    progressSubHeading.textContent = 'Everything requested has been saved.';
     progressPercent.textContent = '100%';
     overallProgressBar.style.width = '100%';
+    overallProgressBar.parentElement.setAttribute('aria-valuenow', '100');
     if (event.lastDownloadId) lastCompletedDownloadId = event.lastDownloadId;
     if (event.queueCleared) {
       downloadQueue = [];
@@ -641,7 +662,7 @@ function handleProgressUpdate(event) {
     event.logs.forEach(l => {
       const row = document.createElement('div');
       row.className = 'log-entry';
-      row.innerHTML = `<span class="log-time">[${l.time}]</span> <span class="log-msg-${l.type || 'info'}">${l.message}</span>`;
+      row.innerHTML = `<span class="log-time">${esc(l.time)}</span> <span class="log-msg-${esc(l.type || 'info')}">${esc(l.message)}</span>`;
       logContent.appendChild(row);
     });
     logContent.scrollTop = logContent.scrollHeight;
@@ -661,8 +682,17 @@ startBtn.addEventListener('click', async () => {
     downloadMode: downloadModeSelect ? downloadModeSelect.value : 'zip',
     mergeUnitPdfs: mergeUnitPdfsCheck ? mergeUnitPdfsCheck.checked : true,
     mergeAllUnits: mergeAllUnitsCheck ? mergeAllUnitsCheck.checked : true,
-    saveIndividualFiles: saveIndividualCheck ? saveIndividualCheck.checked : true
+    saveIndividualFiles: saveIndividualCheck ? saveIndividualCheck.checked : true,
+    includeSlides: includeSlidesCheck ? includeSlidesCheck.checked : true,
+    includeNotes: includeNotesCheck ? includeNotesCheck.checked : false
   };
+
+  if (!options.includeSlides && !options.includeNotes) {
+    addLog('Choose slides, notes, or both before downloading.', 'warn');
+    progressSection.classList.remove('hidden');
+    return;
+  }
+  persistPreferences();
 
   // If items exist in the Download List, execute queue batch download
   if (downloadQueue.length > 0) {
@@ -685,7 +715,7 @@ startBtn.addEventListener('click', async () => {
       if (chrome.runtime.lastError || (res && !res.success)) {
         const rawErr = chrome.runtime.lastError?.message || res?.error || 'Failed to start queue download';
         if (rawErr.includes('message port closed') || rawErr.includes('Could not establish connection')) {
-          addLog('⚠️ Background worker needs reload. Click the 🔄 button in the top right to reload and retry.', 'warn');
+          addLog('Background worker needs a reload. Use the reload button at the top right, then retry.', 'warn');
         } else {
           addLog(`Failed to start: ${rawErr}`, 'error');
         }
@@ -750,7 +780,7 @@ startBtn.addEventListener('click', async () => {
     if (chrome.runtime.lastError || (res && !res.success)) {
       const rawErr = chrome.runtime.lastError?.message || res?.error || 'Failed to start background download';
       if (rawErr.includes('message port closed') || rawErr.includes('Could not establish connection')) {
-        addLog('⚠️ Background worker needs reload. Click the 🔄 button in the top right to reload and retry.', 'warn');
+        addLog('Background worker needs a reload. Use the reload button at the top right, then retry.', 'warn');
       } else {
         addLog(`Failed to start: ${rawErr}`, 'error');
       }
@@ -828,12 +858,17 @@ function showSummaryModal(sum) {
   statConverted.textContent = sum.pptxConverted;
   statMerged.textContent = sum.pdfsMerged;
   statFailed.textContent = sum.failed;
+  const keptNotice = document.getElementById('keptOriginalNotice');
+  if (keptNotice) {
+    statKept.textContent = sum.keptOriginal || 0;
+    keptNotice.classList.toggle('hidden', !(sum.keptOriginal > 0));
+  }
 
   if (sum.failed > 0 && sum.failedList.length > 0) {
     failedFilesSection.classList.remove('hidden');
     failedList.innerHTML = sum.failedList.map(item => `
       <div class="failed-item">
-        <strong>${item.unit} — ${item.file}</strong>: ${item.reason}
+        <strong>${esc(item.unit)} · ${esc(item.file)}</strong><br>${esc(item.reason)}
       </div>
     `).join('');
   } else {
@@ -856,90 +891,123 @@ function showSummaryModal(sum) {
 closeModalBtn.addEventListener('click', () => summaryModal.classList.add('hidden'));
 modalDoneBtn.addEventListener('click', () => summaryModal.classList.add('hidden'));
 
-// Check for updates from GitHub Releases
-async function checkForUpdates() {
-  const updateBanner = document.getElementById('updateBanner');
-  const updateVersionStr = document.getElementById('updateVersionStr');
-  const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
-  const dismissUpdateBtn = document.getElementById('dismissUpdateBtn');
-  if (!updateBanner || !downloadUpdateBtn) return;
+// ───────── Updates ─────────
+// The service worker checks GitHub every few hours and caches the result, so
+// the popup can render instantly from storage and only hits the network when
+// the user asks (or the cache is stale).
+const updateBanner = document.getElementById('updateBanner');
+const updateVersionStr = document.getElementById('updateVersionStr');
+const updateNotes = document.getElementById('updateNotes');
+const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
+const dismissUpdateBtn = document.getElementById('dismissUpdateBtn');
+const updateStatus = document.getElementById('updateStatus');
+const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+const versionTag = document.getElementById('versionTag');
+let latestInfo = null;
 
-  if (dismissUpdateBtn) {
-    dismissUpdateBtn.addEventListener('click', () => {
-      updateBanner.classList.add('hidden');
-    });
+function timeAgo(ts) {
+  if (!ts) return 'never';
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  return hrs < 24 ? `${hrs} h ago` : `${Math.round(hrs / 24)} d ago`;
+}
+
+async function renderUpdateState(errorMsg) {
+  const { info, available, dismissed } = await getUpdateInfo();
+  latestInfo = info;
+  const mine = `v${currentVersion()}`;
+
+  if (available && info) {
+    updateStatus.textContent = `${info.tag} available`;
+    updateStatus.classList.add('is-new');
+    updateVersionStr.textContent = info.tag;
+    const firstLine = (info.notes || '').split('\n').filter(l => !/^\s*#/.test(l)).map(l => l.replace(/^[*\-\s]+/, '').trim()).find(Boolean);
+    updateNotes.textContent = firstLine || `You are on ${mine}.`;
+    updateBanner.classList.toggle('hidden', !!dismissed);
+  } else {
+    updateStatus.classList.remove('is-new');
+    updateStatus.textContent = errorMsg
+      ? `Couldn't check (${errorMsg})`
+      : `${mine} · up to date · checked ${timeAgo(info?.checkedAt)}`;
+    updateBanner.classList.add('hidden');
   }
+}
 
-  try {
-    const currentVersion = (chrome.runtime && chrome.runtime.getManifest) 
-      ? chrome.runtime.getManifest().version 
-      : '1.1.0';
-    const response = await fetch('https://api.github.com/repos/PixelAlgorithm/PesuGuide/releases/latest', {
-      headers: { 'Accept': 'application/vnd.github.v3+json' }
-    });
-    if (!response.ok) return;
+async function checkForUpdates(force = false) {
+  if (checkUpdateBtn) { checkUpdateBtn.disabled = true; checkUpdateBtn.textContent = 'Checking…'; }
+  const result = await checkForUpdate({ force });
+  await applyBadge();
+  await renderUpdateState(result.ok ? null : result.error);
+  if (checkUpdateBtn) { checkUpdateBtn.disabled = false; checkUpdateBtn.textContent = 'Check now'; }
+}
 
-    const release = await response.json();
-    const remoteTag = release.tag_name || '';
-    const remoteVersion = remoteTag.replace(/^v/i, '').trim();
+if (versionTag) versionTag.textContent = `v${currentVersion()}`;
+if (checkUpdateBtn) checkUpdateBtn.addEventListener('click', () => checkForUpdates(true));
 
-    if (isNewerVersion(remoteVersion, currentVersion)) {
-      if (updateVersionStr) updateVersionStr.textContent = remoteTag;
-      updateBanner.classList.remove('hidden');
+if (dismissUpdateBtn) {
+  dismissUpdateBtn.addEventListener('click', async () => {
+    if (latestInfo) await dismissUpdate(latestInfo.version);
+    await applyBadge();
+    updateBanner.classList.add('hidden');
+  });
+}
 
-      downloadUpdateBtn.onclick = () => {
-        const zipAsset = release.assets?.find(a => a.name.endsWith('.zip'));
-        const downloadUrl = zipAsset ? zipAsset.browser_download_url : (release.zipball_url || release.html_url);
-
-        if (chrome.downloads && chrome.downloads.download && zipAsset) {
-          downloadUpdateBtn.disabled = true;
-          downloadUpdateBtn.textContent = 'Downloading...';
-          chrome.downloads.download({
-            url: downloadUrl,
-            filename: zipAsset.name,
-            saveAs: false
-          }, () => {
-            downloadUpdateBtn.textContent = 'Downloaded!';
-            setTimeout(() => {
-              downloadUpdateBtn.textContent = 'View Release';
-              downloadUpdateBtn.disabled = false;
-              downloadUpdateBtn.onclick = () => {
-                if (chrome.tabs && chrome.tabs.create) {
-                  chrome.tabs.create({ url: release.html_url });
-                } else {
-                  window.open(release.html_url, '_blank');
-                }
-              };
-            }, 2500);
-          });
-        } else {
-          if (chrome.tabs && chrome.tabs.create) {
-            chrome.tabs.create({ url: release.html_url });
-          } else {
-            window.open(release.html_url, '_blank');
-          }
-        }
-      };
+if (downloadUpdateBtn) {
+  downloadUpdateBtn.addEventListener('click', () => {
+    if (!latestInfo) return;
+    const openRelease = () => chrome.tabs.create({ url: latestInfo.htmlUrl });
+    if (latestInfo.zipUrl && chrome.downloads) {
+      downloadUpdateBtn.disabled = true;
+      downloadUpdateBtn.textContent = 'Downloading…';
+      chrome.downloads.download({ url: latestInfo.zipUrl, filename: latestInfo.zipName, saveAs: false }, () => {
+        downloadUpdateBtn.textContent = 'Downloaded';
+        updateNotes.textContent = 'Unzip it over your PesUGuide folder, then reload the extension.';
+        setTimeout(() => {
+          downloadUpdateBtn.textContent = 'Release page';
+          downloadUpdateBtn.disabled = false;
+          downloadUpdateBtn.onclick = openRelease;
+        }, 1800);
+      });
+    } else {
+      openRelease();
     }
-  } catch (err) {
-    console.debug('Update check skipped:', err);
-  }
+  });
 }
 
-function isNewerVersion(remote, current) {
-  if (!remote || !current) return false;
-  const rParts = remote.split('.').map(n => parseInt(n, 10) || 0);
-  const cParts = current.split('.').map(n => parseInt(n, 10) || 0);
-  const len = Math.max(rParts.length, cParts.length);
-
-  for (let i = 0; i < len; i++) {
-    const r = rParts[i] || 0;
-    const c = cParts[i] || 0;
-    if (r > c) return true;
-    if (r < c) return false;
-  }
-  return false;
+// ───────── Preferences ─────────
+const PREF_KEY = 'pesu_prefs';
+function persistPreferences() {
+  chrome.storage.local.set({
+    [PREF_KEY]: {
+      includeSlides: includeSlidesCheck.checked,
+      includeNotes: includeNotesCheck.checked,
+      downloadMode: downloadModeSelect.value,
+      mergeUnitPdfs: mergeUnitPdfsCheck.checked,
+      mergeAllUnits: mergeAllUnitsCheck.checked,
+      saveIndividual: saveIndividualCheck.checked
+    }
+  });
 }
+
+async function restorePreferences() {
+  const prefs = (await chrome.storage.local.get(PREF_KEY))[PREF_KEY];
+  if (!prefs) return;
+  includeSlidesCheck.checked = prefs.includeSlides !== false;
+  includeNotesCheck.checked = prefs.includeNotes === true;
+  if (prefs.downloadMode) downloadModeSelect.value = prefs.downloadMode;
+  mergeUnitPdfsCheck.checked = prefs.mergeUnitPdfs !== false;
+  mergeAllUnitsCheck.checked = prefs.mergeAllUnits !== false;
+  saveIndividualCheck.checked = prefs.saveIndividual !== false;
+  updateStartButtonState();
+}
+
+[includeSlidesCheck, includeNotesCheck, downloadModeSelect, mergeUnitPdfsCheck, mergeAllUnitsCheck, saveIndividualCheck]
+  .forEach(el => el && el.addEventListener('change', () => { persistPreferences(); updateStartButtonState(); }));
+
+restorePreferences();
+renderUpdateState();
 
 // Initialize on popup load
 init();

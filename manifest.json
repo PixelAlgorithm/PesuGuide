@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PesUGuide - Academic Course Materials Organizer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "The ultimate course materials guide and automated slide organizer for PESU Academy.",
   "permissions": [
     "downloads",
@@ -10,7 +10,9 @@
     "tabs",
     "scripting",
     "cookies",
-    "offscreen"
+    "offscreen",
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -38,8 +40,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.pesuacademy.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.pesuacademy.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

@@ -8,6 +8,14 @@ import { PesuScraper } from './pesu-scraper.js';
 import { PptxConverter } from './pptx-converter.js';
 import { PdfMerger } from './pdf-merger.js';
 import { saveBlobToDB, deleteBlobFromDB } from './idb-helper.js';
+import { ensureOffscreenDocument } from './offscreen-client.js';
+import { sniffType, decodeText, extractNextUrl, normalizeShareUrl, guessExt, guessBaseName } from './file-resolver.js';
+
+// Material kinds PesuGuide can fetch. `contentType` is PESU Academy's tab id.
+export const MATERIAL_KINDS = {
+  slides: { key: 'slides', contentType: 2, label: 'Slide', plural: 'slides', folder: 'slides', filePart: 'slide', mergedSuffix: '' },
+  notes: { key: 'notes', contentType: 3, label: 'Note', plural: 'notes', folder: 'notes', filePart: 'note', mergedSuffix: '_notes' }
+};
 
 // Global registry tracking clean target filenames across all download contexts
 export const pendingFilenameMap = new Map();
@@ -22,81 +30,6 @@ export function registerDownloadFilename(url, filename) {
   pendingFilenameQueue.push(safeName);
   if (pendingFilenameQueue.length > 50) {
     pendingFilenameQueue.shift();
-  }
-}
-
-async function pingOffscreen(timeoutMs = 400) {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const timer = setTimeout(() => {
-      if (!resolved) {
-        resolved = true;
-        resolve(false);
-      }
-    }, timeoutMs);
-
-    try {
-      chrome.runtime.sendMessage({ action: 'OFFSCREEN_PING' }, (res) => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          if (chrome.runtime.lastError || !res || !res.ready) {
-            resolve(false);
-          } else {
-            resolve(true);
-          }
-        }
-      });
-    } catch (e) {
-      if (!resolved) {
-        resolved = true;
-        clearTimeout(timer);
-        resolve(false);
-      }
-    }
-  });
-}
-
-async function waitForOffscreenReady(maxRetries = 25, intervalMs = 100) {
-  for (let i = 0; i < maxRetries; i++) {
-    const isReady = await pingOffscreen(300);
-    if (isReady) return true;
-    await new Promise(r => setTimeout(r, intervalMs));
-  }
-  return false;
-}
-
-let offscreenCreating = null;
-async function ensureOffscreenDocument() {
-  if (typeof chrome === 'undefined' || !chrome.offscreen) return false;
-  try {
-    if (await chrome.offscreen.hasDocument()) {
-      const alive = await pingOffscreen(300);
-      if (alive) return true;
-      try {
-        await chrome.offscreen.closeDocument();
-      } catch (e) {}
-    }
-
-    if (offscreenCreating) {
-      await offscreenCreating;
-      return await waitForOffscreenReady(15, 100);
-    }
-
-    offscreenCreating = chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['BLOBS'],
-      justification: 'Create zero-copy blob object URLs for file downloads'
-    });
-    await offscreenCreating;
-    offscreenCreating = null;
-
-    const ready = await waitForOffscreenReady(25, 100);
-    return ready;
-  } catch (e) {
-    offscreenCreating = null;
-    console.warn('Offscreen document creation error:', e);
-    return false;
   }
 }
 
@@ -211,9 +144,27 @@ export async function asyncPool(concurrency, items, iteratorFn) {
   return Promise.all(ret);
 }
 
+const MIME_BY_EXT = {
+  pdf: 'application/pdf', zip: 'application/zip',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ppt: 'application/vnd.ms-powerpoint',
+  ppsx: 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xls: 'application/vnd.ms-excel',
+  txt: 'text/plain', md: 'text/markdown', csv: 'text/csv',
+  png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif'
+};
+
+export function mimeForPath(path) {
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
 export class CourseOrchestrator {
   constructor() {
-    this.scraper = new PesuScraper();
+    this.scraper = new PesuScraper({ keepAlive: true });
     this.isCancelled = false;
     this.summary = {
       unitsFound: 0,
@@ -228,6 +179,7 @@ export class CourseOrchestrator {
     this.completedFiles = new Set();
     this.abortController = null;
     this.currentTargetFilename = null;
+    this.pesuQueue = Promise.resolve();
   }
 
   /**
@@ -275,7 +227,7 @@ export class CourseOrchestrator {
   async triggerChromeDownload(blob, filepath) {
     if (this.isCancelled) return null;
 
-    const mimeType = filepath.endsWith('.zip') ? 'application/zip' : 'application/pdf';
+    const mimeType = mimeForPath(filepath);
     const basename = filepath.split(/[\\/]/).pop();
     const fileBlob = (blob instanceof Blob) ? blob : new Blob([blob], { type: mimeType });
 
@@ -437,75 +389,116 @@ export class CourseOrchestrator {
   }
 
   /**
-   * Fetches file buffer from PESU Academy slide download URL
+   * Fetches a slide/note link and follows wrapper pages until real file bytes
+   * arrive. Handles direct downloads, Content-Disposition endpoints, HTML
+   * wrappers (meta refresh / iframe / viewer) and Drive share links.
+   * @returns {{bytes: Uint8Array, type: string, ext: string, baseName: string}}
    */
-  async fetchFileBuffer(url, retries = CONFIG.DOWNLOADS.RETRY_ATTEMPTS) {
-    if (this.isCancelled) throw new Error('Download cancelled by user');
-    const isInternalSessionEndpoint = url.includes('www.pesuacademy.com/Academy/') && !url.includes('files.pesuacademy.com');
+  async fetchResolved(url, maxHops = 4) {
+    let current = normalizeShareUrl(url);
+    const visited = new Set();
+
+    for (let hop = 0; hop <= maxHops; hop++) {
+      if (this.isCancelled) throw new Error('Download cancelled by user');
+      if (visited.has(current)) break;
+      visited.add(current);
+
+      const { bytes, finalUrl, contentDisposition } = await this.fetchWithMeta(current);
+      const hintExt = guessExt(contentDisposition, finalUrl || current);
+      const sniffed = sniffType(bytes, hintExt);
+
+      if (sniffed.type !== 'html' && sniffed.type !== 'json') {
+        return { bytes, type: sniffed.type, ext: sniffed.ext, baseName: guessBaseName(contentDisposition) };
+      }
+
+      const next = extractNextUrl(decodeText(bytes), finalUrl || current);
+      if (!next) {
+        const text = decodeText(bytes, 4000).toLowerCase();
+        if (/sign in|j_username|session\s*expired/.test(text)) {
+          throw new Error('Session expired - sign in to PESU Academy again');
+        }
+        throw new Error('Link opened a web page, not a downloadable file');
+      }
+      current = normalizeShareUrl(next);
+    }
+    throw new Error('Link redirected too many times without reaching a file');
+  }
+
+  /**
+   * PESU's own endpoints are fetched one at a time from inside the PESU tab
+   * (they reject parallel / background-worker requests with 500 or empty
+   * bodies). Anything else (S3, CloudFront, Drive) is fetched directly.
+   */
+  async fetchWithMeta(url, retries = CONFIG.DOWNLOADS.RETRY_ATTEMPTS) {
+    const isPesuSession = /^https?:\/\/www\.pesuacademy\.com\//i.test(url);
+    if (isPesuSession) {
+      const run = () => this.scraper.fetchInPage(url);
+      const queued = this.pesuQueue.then(run, run);
+      this.pesuQueue = queued.catch(() => {});
+      try {
+        return await queued;
+      } catch (pageErr) {
+        if (this.isCancelled) throw new Error('Download cancelled by user');
+        // Last resort: a direct request from the background worker
+        try {
+          return await this.fetchDirect(url, retries, true);
+        } catch {
+          throw pageErr;
+        }
+      }
+    }
+    return this.fetchDirect(url, retries, false);
+  }
+
+  async fetchDirect(url, retries, isPesuSession) {
     for (let attempt = 1; attempt <= retries; attempt++) {
       if (this.isCancelled) throw new Error('Download cancelled by user');
       try {
         const response = await fetch(url, {
           method: 'GET',
-          credentials: isInternalSessionEndpoint ? 'include' : 'omit',
+          credentials: isPesuSession ? 'include' : 'omit',
+          redirect: 'follow',
           signal: this.abortController ? this.abortController.signal : undefined
         });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status} ${response.statusText}`);
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        return new Uint8Array(arrayBuffer);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buf = await response.arrayBuffer();
+        if (buf.byteLength === 0) throw new Error('Server returned an empty file');
+        return {
+          bytes: new Uint8Array(buf),
+          finalUrl: response.url || url,
+          contentDisposition: response.headers.get('content-disposition') || ''
+        };
       } catch (err) {
         if (this.isCancelled || err.name === 'AbortError') throw new Error('Download cancelled by user');
-        if (attempt === retries) throw err;
+        // 4xx will not get better on retry
+        if (/HTTP 4\d\d/.test(err.message) || attempt === retries) throw err;
         await new Promise(r => setTimeout(r, CONFIG.DOWNLOADS.RETRY_DELAY_MS * attempt));
       }
     }
   }
 
   /**
-   * Main execution function for a subject
+   * Processes one kind of material (slides or notes) for a subject.
+   * Files are added to options.sharedZip when packaging as ZIP, otherwise
+   * downloaded straight to disk. Summary counters accumulate on this.summary.
    */
-  async processSubject(subject, selectedUnitNumbers = null, options = {}, onProgress = null) {
-    this.isCancelled = false;
-    this.abortController = new AbortController();
-    const subjectSlug = formatSubjectSlug(subject);
-    const subjectFolder = this.sanitizeName(subject.displayName || `${subject.code} - ${subject.title}`);
-    const subjectKey = subject.id;
-    await this.loadHistory(subjectKey);
-
-    const isZipMode = options.downloadMode === 'zip' || options.downloadMode === undefined;
-    const JSZipClass = (typeof JSZip !== 'undefined' && JSZip) ||
-                       (typeof window !== 'undefined' && window.JSZip) ||
-                       (typeof self !== 'undefined' && self.JSZip) ||
-                       (typeof globalThis !== 'undefined' && globalThis.JSZip);
-    const zip = options.sharedZip || ((isZipMode && JSZipClass) ? new JSZipClass() : null);
-
-    this.summary = {
-      subject: subject.displayName,
-      unitsFound: 0,
-      filesFound: 0,
-      filesDownloaded: 0,
-      pptxConverted: 0,
-      pdfsMerged: 0,
-      failed: 0,
-      failedList: []
-    };
+  async processMaterial(subject, selectedUnitNumbers, options, onProgress, kind, subjectSlug, subjectKey) {
+    const zip = options.sharedZip || null;
+    const kindTag = kind.mergedSuffix; // '' for slides, '_notes' for notes
+    const noun = kind.plural;
 
     if (onProgress) {
       onProgress({
         status: 'scanning',
-        message: `Discovering units and slide materials for ${subject.displayName}...`
+        message: `Discovering ${noun} for ${subject.displayName}...`
       });
     }
 
-    const scanResult = await this.scraper.scanSubjectSlides(subject.id, selectedUnitNumbers, onProgress);
+    const scanResult = await this.scraper.scanSubjectSlides(subject.id, selectedUnitNumbers, onProgress, kind.contentType);
     const units = scanResult.units;
 
-    this.summary.unitsFound = units.length;
-    this.summary.filesFound = scanResult.totalFiles;
+    this.summary.unitsFound = Math.max(this.summary.unitsFound, units.length);
+    this.summary.filesFound += scanResult.totalFiles;
 
     let overallFileIndex = 0;
     let lastDownloadId = null;
@@ -524,13 +517,13 @@ export class CourseOrchestrator {
 
       if (files.length === 0) {
         this.summary.emptyUnits = this.summary.emptyUnits || [];
-        this.summary.emptyUnits.push(unitNumber);
+        this.summary.emptyUnits.push(kind.key === 'notes' ? `Unit ${unitNumber} (notes)` : unitNumber);
         if (onProgress) {
           onProgress({
             status: 'unit_empty',
             unitNumber: unitNumber,
             unitName: `Unit ${unitNumber}`,
-            message: `⚠️ Unit ${unitNumber}: No slides uploaded on PESU Academy (Skipping empty unit).`
+            message: `⚠️ Unit ${unitNumber}: No ${noun} uploaded on PESU Academy (skipping).`
           });
         }
         continue;
@@ -547,14 +540,15 @@ export class CourseOrchestrator {
         const slideIndexPadded = String(fIdx + 1).padStart(2, '0');
         const slideSlug = formatSlideSlug(file.title);
 
-        // Clean slide PDF name: subjectname_unit_x_slide_01.pdf
-        const slidePdfFilename = slideSlug
-          ? `${subjectSlug}_unit_${unitNumber}_slide_${slideIndexPadded}_${slideSlug}.pdf`
-          : `${subjectSlug}_unit_${unitNumber}_slide_${slideIndexPadded}.pdf`;
+        // Base name without extension: subject_unit_1_slide_01_title
+        const baseName = slideSlug
+          ? `${subjectSlug}_unit_${unitNumber}_${kind.filePart}_${slideIndexPadded}_${slideSlug}`
+          : `${subjectSlug}_unit_${unitNumber}_${kind.filePart}_${slideIndexPadded}`;
+        const slidePdfFilename = `${baseName}.pdf`;
 
-        const displayTitle = slideSlug 
-          ? `Slide ${slideIndexPadded} (${slideSlug.replace(/_/g, ' ')})`
-          : `Slide ${slideIndexPadded}`;
+        const displayTitle = slideSlug
+          ? `${kind.label} ${slideIndexPadded} (${slideSlug.replace(/_/g, ' ')})`
+          : `${kind.label} ${slideIndexPadded}`;
 
         if (onProgress) {
           onProgress({
@@ -568,10 +562,12 @@ export class CourseOrchestrator {
         }
 
         try {
-          const fileBytes = await this.fetchFileBuffer(file.fullUrl);
-          const detectedType = PptxConverter.detectFormat(fileBytes);
+          const resolved = await this.fetchResolved(file.fullUrl);
+          const fileBytes = resolved.bytes;
+          const detectedType = resolved.type;
 
           let finalPdfBytes = null;
+          let rawFile = null; // { bytes, ext } for formats we can't turn into PDF
 
           if (detectedType === 'pdf') {
             finalPdfBytes = fileBytes;
@@ -583,17 +579,29 @@ export class CourseOrchestrator {
                 currentFile: `${displayTitle} (${detectedType.toUpperCase()} -> PDF)`
               });
             }
-            finalPdfBytes = await PptxConverter.convertToPdf(fileBytes, `${slidePdfFilename.replace('.pdf', '')}.${detectedType}`, onProgress);
-            this.summary.pptxConverted++;
-          } else {
-            // Check if bytes start with %PDF despite detection
-            const headerStr = String.fromCharCode(...fileBytes.slice(0, 10));
-            if (headerStr.includes('%PDF')) {
-              finalPdfBytes = fileBytes;
-            } else {
-              finalPdfBytes = fileBytes;
+            try {
+              finalPdfBytes = await PptxConverter.convertToPdf(fileBytes, `${baseName}.${resolved.ext}`, onProgress);
+              this.summary.pptxConverted++;
+            } catch (convErr) {
+              // Never lose the file: keep the original presentation
+              rawFile = { bytes: fileBytes, ext: resolved.ext };
+              this.summary.keptOriginal++;
+              if (onProgress) {
+                onProgress({
+                  status: 'downloading',
+                  message: `⚠️ ${displayTitle}: could not convert to PDF (${convErr.message}). Saved original .${resolved.ext}.`
+                });
+              }
             }
+          } else {
+            // docx, xlsx, txt, images, zip... keep as-is with the right extension
+            rawFile = { bytes: fileBytes, ext: resolved.ext };
           }
+
+          const entryName = (ext) => `${baseName}.${ext}`;
+          const subPath = (name) => kind.key === 'slides'
+            ? `${unitFolderName}/${name}`
+            : `${kind.folder}/${unitFolderName}/${name}`;
 
           if (finalPdfBytes) {
             unitPdfBuffers[fIdx] = {
@@ -602,17 +610,21 @@ export class CourseOrchestrator {
               filename: slidePdfFilename,
               index: fIdx
             };
+          }
 
-            // If ZIP mode: add individual slide to ZIP folder
-            if (zip && options.saveIndividualFiles !== false) {
-              const slidePath = options.folderPrefix
-                ? `${options.folderPrefix}/slides/${unitFolderName}/${slidePdfFilename}`
-                : `slides/${unitFolderName}/${slidePdfFilename}`;
-              zip.file(slidePath, finalPdfBytes);
-            } else if (!zip && options.saveIndividualFiles !== false && options.downloadMode !== 'merged_only') {
+          const outBytes = finalPdfBytes || (rawFile && rawFile.bytes);
+          const outName = finalPdfBytes ? slidePdfFilename : (rawFile ? entryName(rawFile.ext) : null);
+
+          if (outBytes && options.saveIndividualFiles !== false || rawFile) {
+            if (zip) {
+              const zipPath = options.folderPrefix
+                ? `${options.folderPrefix}/${kind.folder}/${unitFolderName}/${outName}`
+                : `${kind.folder}/${unitFolderName}/${outName}`;
+              zip.file(zipPath, outBytes);
+            } else if (options.downloadMode !== 'merged_only' || rawFile) {
               // Direct download with clean readable filename
-              const relativePath = `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${unitFolderName}/${slidePdfFilename}`;
-              const blob = new Blob([finalPdfBytes], { type: 'application/pdf' });
+              const relativePath = `${CONFIG.DOWNLOADS.ROOT_FOLDER}/${subjectSlug}/${subPath(outName)}`;
+              const blob = new Blob([outBytes]);
               lastDownloadId = await this.triggerChromeDownload(blob, relativePath);
             }
           }
@@ -648,7 +660,7 @@ export class CourseOrchestrator {
 
       // Merge unit PDFs into readable subjectname_unit_x.pdf format and/or queue for multi-unit merge
       if (!this.isCancelled && validUnitPdfBuffers.length > 0 && (options.mergeUnitPdfs !== false || options.mergeAllUnits !== false)) {
-        const mergedFilename = `${subjectSlug}_unit_${unitNumber}.pdf`;
+        const mergedFilename = `${subjectSlug}_unit_${unitNumber}${kindTag}.pdf`;
 
         if (onProgress && options.mergeUnitPdfs !== false) {
           onProgress({
@@ -661,7 +673,7 @@ export class CourseOrchestrator {
         try {
           const mergeResult = await PdfMerger.mergePdfs(
             validUnitPdfBuffers,
-            `${subject.displayName} - Unit ${unitNumber}`,
+            `${subject.displayName} - Unit ${unitNumber}${kind.key === 'notes' ? ' Notes' : ''}`,
             (p) => {
               if (onProgress && options.mergeUnitPdfs !== false) {
                 onProgress({
@@ -730,7 +742,7 @@ export class CourseOrchestrator {
     if (!this.isCancelled && allUnitsMergedList.length > 0 && options.mergeAllUnits !== false && (allUnitsMergedList.length > 1 || options.mergeUnitPdfs === false)) {
       const activeUnitNums = units.filter(u => u.files && u.files.length > 0).map(u => u.unitNumber).sort((a, b) => a - b);
       const unitsTag = activeUnitNums.length > 0 ? `units_${activeUnitNums.join('_')}` : 'all_units';
-      const allUnitsMergedFilename = `${subjectSlug}_${unitsTag}_merged.pdf`;
+      const allUnitsMergedFilename = `${subjectSlug}_${unitsTag}${kindTag}_merged.pdf`;
 
       if (onProgress) {
         onProgress({
@@ -748,7 +760,7 @@ export class CourseOrchestrator {
         } else {
           const combinedResult = await PdfMerger.mergePdfs(
             allUnitsMergedList,
-            `${subject.displayName} - Combined Units (${activeUnitNums.join(', ')})`,
+            `${subject.displayName} - Combined ${kind.key === 'notes' ? 'Notes' : 'Units'} (${activeUnitNums.join(', ')})`,
             (p) => {
               if (onProgress) {
                 onProgress({
@@ -799,10 +811,79 @@ export class CourseOrchestrator {
       }
     }
 
-    // If ZIP mode and processing completed (and not deferred to a multi-course bundle), trigger single clean ZIP download
-    if (zip && !options.skipZipDownload && !this.isCancelled && this.summary.filesDownloaded > 0) {
-      const downloadedUnits = units.filter(u => u.files && u.files.length > 0);
-      const zipFilename = formatZipFilename(subjectSlug, downloadedUnits, selectedUnitNumbers);
+    return { units, lastDownloadId };
+  }
+
+  /**
+   * Main execution function for a subject: slides and/or notes.
+   * options.includeSlides (default true), options.includeNotes (default false)
+   */
+  async processSubject(subject, selectedUnitNumbers = null, options = {}, onProgress = null) {
+    this.isCancelled = false;
+    this.abortController = new AbortController();
+    const subjectSlug = formatSubjectSlug(subject);
+    const subjectKey = subject.id;
+    await this.loadHistory(subjectKey);
+
+    const kinds = [];
+    if (options.includeSlides !== false) kinds.push(MATERIAL_KINDS.slides);
+    if (options.includeNotes === true) kinds.push(MATERIAL_KINDS.notes);
+    if (kinds.length === 0) kinds.push(MATERIAL_KINDS.slides);
+
+    const isZipMode = options.downloadMode === 'zip' || options.downloadMode === undefined;
+    const JSZipClass = (typeof JSZip !== 'undefined' && JSZip) ||
+                       (typeof window !== 'undefined' && window.JSZip) ||
+                       (typeof self !== 'undefined' && self.JSZip) ||
+                       (typeof globalThis !== 'undefined' && globalThis.JSZip);
+    const zip = options.sharedZip || ((isZipMode && JSZipClass) ? new JSZipClass() : null);
+    const passOptions = { ...options, sharedZip: zip };
+
+    this.summary = {
+      subject: subject.displayName,
+      unitsFound: 0,
+      filesFound: 0,
+      filesDownloaded: 0,
+      pptxConverted: 0,
+      keptOriginal: 0,
+      pdfsMerged: 0,
+      failed: 0,
+      failedList: [],
+      emptyUnits: []
+    };
+
+    let lastDownloadId = null;
+    const downloadedUnitMap = new Map();
+
+    for (let k = 0; k < kinds.length; k++) {
+      if (this.isCancelled) break;
+      const kind = kinds[k];
+
+      // Map each pass onto its share of 0-100 so the bar never jumps backwards
+      const scaled = onProgress && ((evt) => {
+        if (!evt) return;
+        const next = { ...evt };
+        if (typeof next.percent === 'number') {
+          next.percent = Math.min(99, Math.round((k * 100 + next.percent) / kinds.length));
+        }
+        if (kinds.length > 1 && next.currentFile && next.status === 'downloading') {
+          next.unitName = `${kind.label}s · ${next.unitName || ''}`.replace(/ · $/, '');
+        }
+        onProgress(next);
+      });
+
+      const result = await this.processMaterial(subject, selectedUnitNumbers, passOptions, scaled, kind, subjectSlug, subjectKey);
+      if (result.lastDownloadId) lastDownloadId = result.lastDownloadId;
+      for (const u of result.units) {
+        if (u.files && u.files.length > 0) downloadedUnitMap.set(u.unitNumber, u);
+      }
+    }
+
+    // Single clean ZIP (unless a multi-course bundle will be written by the caller)
+    if (zip && !options.sharedZip && !options.skipZipDownload && !this.isCancelled && this.summary.filesDownloaded > 0) {
+      const downloadedUnits = Array.from(downloadedUnitMap.values());
+      const only = kinds.length === 1 ? kinds[0] : null;
+      const zipBase = only && only.key === 'notes' ? `${subjectSlug}_notes` : subjectSlug;
+      const zipFilename = formatZipFilename(zipBase, downloadedUnits, selectedUnitNumbers);
 
       if (onProgress) {
         onProgress({
@@ -814,7 +895,7 @@ export class CourseOrchestrator {
         });
       }
 
-      // Fast, low-memory packaging: PDFs are already compressed, so STORE avoids CPU lockup and memory spikes
+      // PDFs are already compressed, so STORE avoids CPU lockups and memory spikes
       const zipBlob = await zip.generateAsync({
         type: 'blob',
         compression: 'STORE',

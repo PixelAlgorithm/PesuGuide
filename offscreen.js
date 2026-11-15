@@ -3,7 +3,8 @@
  * Provides DOM access to URL.createObjectURL() for memory-efficient, zero-copy file downloads.
  * Creates extension-origin blob URLs that can be downloaded natively via chrome.downloads in the Service Worker.
  */
-import { getBlobFromDB, deleteBlobFromDB } from './src/idb-helper.js';
+import { getBlobFromDB, deleteBlobFromDB, saveBlobToDB } from './src/idb-helper.js';
+import { PptxConverter } from './src/pptx-converter.js';
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'OFFSCREEN_PING') {
@@ -18,6 +19,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         console.error('Failed to create blob URL in offscreen:', err);
         sendResponse({ success: false, error: err.message });
       });
+    return true;
+  }
+
+  if (request.action === 'OFFSCREEN_CONVERT_PPTX') {
+    (async () => {
+      const stored = await getBlobFromDB(request.key);
+      if (!stored) throw new Error('PPTX bytes not found');
+      const bytes = stored instanceof Uint8Array ? stored : new Uint8Array(stored instanceof Blob ? await stored.arrayBuffer() : stored);
+      const pdf = await PptxConverter.convertPptxInBrowser(bytes, request.filename || 'slides.pptx');
+      const outKey = `${request.key}_out`;
+      await saveBlobToDB(outKey, pdf);
+      return outKey;
+    })()
+      .then(outKey => sendResponse({ success: true, outKey }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
